@@ -1,0 +1,4 @@
+InvoiceNo,StockCode,Description,Quantity,InvoiceDate,UnitPrice,CustomerID,Country
+10001,A1,Valid item,2,2026-09-01 10:00:00,12.50,12345,Vietnam
+10002,A2,Missing customer,1,2026-09-01 11:00:00,5.00,,Vietnam
+10003,A3,Negative quantity,-1,2026-09-01 12:00:00,8.00,67890,Vietnam
