@@ -2,7 +2,7 @@
 
 ## Current state
 
-The collaborative project scaffold and local-mode PySpark Docker configuration are complete on branch `initial-setup` and ready for team review.
+The collaborative project scaffold and local-mode PySpark Docker configuration are complete on branch `initial-setup`. The Kaggle dependency and matching Docker-first README instructions are uncommitted working-tree changes.
 
 ## Completed
 
@@ -12,6 +12,7 @@ The collaborative project scaffold and local-mode PySpark Docker configuration a
 - Standardized decision headings to include time and UTC offset.
 - Expanded the LocalExecutor decision with the previous Celery architecture, rationale, removed services, resource consequences, and revisit conditions.
 - Documented the selected Kaggle UCI Online Retail dataset and its CLI download command to `data/raw/data.csv`.
+- Clarified that `docker compose build` installs `requirements.txt`; the Kaggle CLI runs from the built image, so contributors do not duplicate the Python environment on the host.
 - Normalized the DAG task IDs to the assignment names while keeping tasks as placeholders.
 - Removed generated Airflow config, logs, bytecode, and `.env` from the source tree; Git can recover the deleted tracked files.
 - No `CLAUDE.md` was created.
@@ -26,6 +27,7 @@ The collaborative project scaffold and local-mode PySpark Docker configuration a
 - `git diff --check` passed; only line-ending notices were emitted.
 - README local-link validation passed (`readme_links=ok`).
 - The setup is isolated on `initial-setup`; `main` remains unchanged.
+- README dependency flow matches the Dockerfile: `docker compose build` installs `requirements.txt`, including the Kaggle CLI; `git diff --check` passed.
 
 ## Unresolved risks
 

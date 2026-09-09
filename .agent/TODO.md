@@ -4,7 +4,7 @@
 |---|---|---|---|---|
 | DONE | Create collaborative project scaffold | Codex | `initial-setup` | None |
 | TODO | Build and smoke-test Docker environment | Unassigned | - | Docker Desktop |
-| DONE | Select and document the Kaggle UCI Online Retail dataset | Team | `initial-setup` | None |
+| DONE | Select the Kaggle dataset and document its Docker-first download | Team | `initial-setup` | None |
 | TODO | Implement raw-data validation | Unassigned | - | `data/raw/data.csv` |
 | TODO | Implement PySpark cleaning job | Unassigned | - | Dataset schema |
 | TODO | Implement RFM job | Unassigned | - | Curated schema |

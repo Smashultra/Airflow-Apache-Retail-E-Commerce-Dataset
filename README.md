@@ -42,7 +42,7 @@ The DAG structure and task dependencies exist, but all tasks are currently place
 ├── .gitignore                   Excludes secrets, datasets, logs, and generated output
 ├── Dockerfile                   Airflow image extended with Java and PySpark
 ├── docker-compose.yaml          Local Airflow and PostgreSQL environment
-├── requirements.txt             Pinned Python and Airflow provider dependencies
+├── requirements.txt             Python and Airflow provider dependencies installed in Docker
 │
 ├── .agent/                      Tool-neutral shared project state
 │   ├── README.md                State-directory conventions
@@ -113,10 +113,12 @@ The same `dags`, `scripts`, `tests`, `data`, and `logs` paths are mounted into t
 
 The team selected Kaggle's [E-Commerce Data](https://www.kaggle.com/datasets/carrie1/ecommerce-data), a copy of the UCI Online Retail transactions dataset. It contains one approximately 45.6 MB file named `data.csv` with the eight assignment fields: `InvoiceNo`, `StockCode`, `Description`, `Quantity`, `InvoiceDate`, `UnitPrice`, `CustomerID`, and `Country`.
 
-Install the [Kaggle CLI](https://github.com/Kaggle/kaggle-api) and configure its credentials once. Then run this command from the repository root:
+The Kaggle CLI is already declared in `requirements.txt`. With the recommended Docker workflow, do not install the project requirements on the host: `docker compose build` installs them inside the shared image.
+
+Configure your [Kaggle API credentials](https://github.com/Kaggle/kaggle-api) at `$HOME/.kaggle/kaggle.json`. After building the image, run this command from the repository root:
 
 ```powershell
-kaggle datasets download -d carrie1/ecommerce-data -p data/raw --unzip
+docker compose run --rm --no-deps -v "${HOME}/.kaggle:/home/airflow/.kaggle:ro" airflow-scheduler bash -c "kaggle datasets download -d carrie1/ecommerce-data -p /opt/airflow/data/raw --unzip"
 ```
 
 Verify the expected file:
@@ -129,11 +131,14 @@ The downloaded file is intentionally ignored by Git. Inside the Airflow containe
 
 ## Quick start
 
-Requirements: Docker Desktop with at least 4 GB of memory available and local port `8080` free.
+Requirements: Docker Desktop with at least 4 GB of memory available, local port `8080` free, and Kaggle API credentials configured at `$HOME/.kaggle/kaggle.json`.
+
+No local `pip install` is required. Building the image is the dependency-installation step because the Dockerfile runs `pip install -r requirements.txt` inside the image.
 
 ```powershell
 Copy-Item .env.example .env
 docker compose build
+docker compose run --rm --no-deps -v "${HOME}/.kaggle:/home/airflow/.kaggle:ro" airflow-scheduler bash -c "kaggle datasets download -d carrie1/ecommerce-data -p /opt/airflow/data/raw --unzip"
 docker compose up airflow-init
 docker compose up -d
 ```
@@ -166,7 +171,7 @@ Git commits and pull requests are the audit trail for individual changes. `.agen
 
 ## Current status
 
-- Project and collaboration structure: complete, not committed yet.
+- Project and collaboration structure: complete on `initial-setup`.
 - Docker configuration: statically validated; not built because Docker is unavailable in the current host shell.
 - DAG topology: complete placeholder skeleton.
 - Dataset selection and download location: complete.
