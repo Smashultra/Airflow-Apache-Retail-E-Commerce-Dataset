@@ -9,9 +9,9 @@
 | DONE | Explain the remaining zero-unit-price rows below EDA cell 15 | Codex | `main` | `data.csv` |
 | DONE | Inspect the seven customer-linked all-zero-price rows in EDA | Codex | `main` | `data.csv` |
 | TODO | Implement raw-data validation | Unassigned | - | `data/raw/data.csv` |
-| TODO | Implement PySpark cleaning job | Unassigned | - | Dataset schema |
+| DONE | Implement PySpark cleaning job | Codex | `main` | Dataset schema |
 | TODO | Implement RFM job | Unassigned | - | Curated schema |
 | TODO | Implement anomaly-detection job | Unassigned | - | Threshold decision |
 | TODO | Replace DAG placeholders with working operators | Unassigned | - | Spark jobs |
-| TODO | Add Spark logic tests | Unassigned | - | Spark jobs |
+| DONE | Add Spark logic tests | Codex | `main` | Spark jobs |
 | TODO | Complete report, setup evidence, and presentation | Unassigned | - | Working pipeline |

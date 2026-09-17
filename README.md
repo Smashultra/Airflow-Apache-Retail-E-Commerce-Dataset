@@ -24,12 +24,11 @@ The intended data flow is:
 
 ```text
 CSV in data/raw/
-  -> cleaned partitioned Parquet in data/curated/
-  -> RFM output in data/analytics/rfm_daily/
-  -> anomaly audit output in data/audit/anomalies/
+  -> deduplicated, non-null RFM input in data/curated/RFM.parquet/
+  -> deduplicated anomaly input in data/audit/anomalies.parquet/
 ```
 
-The DAG structure and task dependencies exist, but all tasks are currently placeholders. ETL business logic has not been implemented yet.
+The cleaning job is implemented and tested. The DAG structure and task dependencies exist, but its tasks are still placeholders.
 
 ## Project structure
 
@@ -64,18 +63,19 @@ The DAG structure and task dependencies exist, but all tasks are currently place
 ├── dags/
 │   └── ecommerce_etl_dag.py     Daily Airflow DAG and task dependencies
 ├── scripts/
-│   ├── pyspark_clean.py         Raw-data cleaning and curated Parquet output
+│   ├── pyspark_clean.py         RFM and anomaly Parquet preparation
 │   ├── pyspark_rfm.py           Per-customer RFM metrics
 │   └── pyspark_anomalies.py     Transaction anomaly detection
 ├── tests/
 │   ├── fixtures/
 │   │   └── sample_transactions.csv
-│   └── test_pyspark_jobs.py     Focused automated checks
+│   ├── test_pyspark_clean.py    Cleaning rules and Parquet write checks
+│   └── test_pyspark_jobs.py     Project-structure check
 ├── data/
 │   ├── raw/                     Local input CSV files
-│   ├── curated/                 Generated cleaned Parquet data
-│   ├── analytics/rfm_daily/     Generated daily RFM results
-│   └── audit/anomalies/         Generated anomaly records
+│   ├── curated/RFM.parquet/     Deduplicated, non-null RFM input
+│   ├── analytics/rfm_daily/     Reserved daily RFM results
+│   └── audit/anomalies.parquet/ Deduplicated anomaly input
 ├── docs/
 │   ├── REPORT.md                Conceptual and architectural report
 │   ├── SETUP.md                 Detailed local setup instructions

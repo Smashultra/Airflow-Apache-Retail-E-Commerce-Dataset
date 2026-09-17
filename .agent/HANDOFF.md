@@ -2,7 +2,7 @@
 
 ## Current state
 
-The collaborative project scaffold and local-mode PySpark Docker configuration are complete on branch `initial-setup`. On `main`, adjacent EDA code cells now explain all 1,056 zero-unit-price rows and inspect the seven customer-linked rows whose entire invoice has zero prices.
+The collaborative project scaffold and local-mode PySpark Docker configuration are complete. On `main`, the EDA notebook explains the zero-price records, and `scripts/pyspark_clean.py` now writes separate RFM-ready and anomaly Parquet datasets.
 
 ## Completed
 
@@ -17,6 +17,10 @@ The collaborative project scaffold and local-mode PySpark Docker configuration a
 - Confirmed all 474 rows have zero unit price and missing customer ID; their descriptions indicate stock adjustments/write-offs rather than customer cancellations.
 - Added a code cell immediately below EDA cell 15 that analyzes the remaining 582 zero-price rows using customer presence and whether the same invoice contains a positive-price line.
 - Added the next EDA code cell to display the seven raw suspicious rows first, compare them with paid product/customer history, and explain the four affected invoices.
+- Implemented `scripts/pyspark_clean.py` with configurable input/output paths and Spark-safe cleanup in `finally`.
+- Added `data/curated/RFM.parquet`, which removes full-row duplicates and then drops rows containing any missing value.
+- Added `data/audit/anomalies.parquet`, which removes full-row duplicates but preserves missing values and negative quantities.
+- Added focused PySpark tests for the two cleaning rules, default output paths, and Parquet round-trip writes.
 - Normalized the DAG task IDs to the assignment names while keeping tasks as placeholders.
 - Removed generated Airflow config, logs, bytecode, and `.env` from the source tree; Git can recover the deleted tracked files.
 - No `CLAUDE.md` was created.
@@ -36,16 +40,22 @@ The collaborative project scaffold and local-mode PySpark Docker configuration a
 - Notebook JSON parsing and Python syntax checks for cell 15 passed; the stale error output was removed.
 - Targeted execution of the new adjacent EDA cell passed: `1056 = 474 + 582`, all 582 remaining rows have positive quantity and are not cancellations, and the four reason groups total 582.
 - Targeted execution of the seven-row inspection cell passed: its first table contains exactly 7 raw rows, the evidence table contains all 7 rows, and the findings cover all 4 affected invoices.
+- `docker compose build` completed and produced `ecommerce-airflow:3.3.1` with PySpark 4.2.0 and pytest 8.4.2.
+- `docker compose run --rm --no-deps airflow-scheduler python -m pytest -q -p no:cacheprovider tests/test_pyspark_clean.py` -> 3 passed, with one upstream pandas-support warning from PySpark.
+- Full-data `spark-submit /opt/airflow/scripts/pyspark_clean.py` completed with exit code 0.
+- Full-data output verification -> `RFM_rows=401604`, `anomalies_rows=536641`.
 
 ## Unresolved risks
 
-- Docker is not available in the current host shell, so the image has not been built yet.
+- The Docker image builds and PySpark runs, but the complete Airflow/PostgreSQL service stack has not been initialized or smoke-tested.
 - The anomaly-threshold method is not selected yet.
 - Cell 15's seven reason groups are keyword-based interpretations of free-text `Description` values; 51 rows remain explicitly classified as unclear rather than being over-interpreted.
 - The remaining zero-price rows do not contain a definitive reason label; the new cell distinguishes evidence-backed invoice contexts and explicitly treats gifts/promotions versus missing prices as unresolved possibilities.
 - The four invoice-level explanations for the seven suspicious rows remain evidence-based hypotheses because the source data has no explicit reason field.
 - Pytest created an inaccessible ignored directory named `pytest-cache-files-phri2efg`; removal failed with `Access is denied`, so its ACL was not altered.
+- PySpark 4.2.0 emits an upstream warning that some features may not fully support pandas 3.x; this job does not use pandas APIs.
+- `.env.example` is currently deleted in the working tree by an unrelated change and was intentionally not restored as part of this task.
 
 ## Next action
 
-Re-run cells 13-17 in `notebooks/EDA_Online_Retail.ipynb` to render all zero-price analyses, then continue with raw-data validation.
+Wire `scripts/pyspark_clean.py` into the `submit_pyspark_etl` DAG task, then implement the downstream RFM metrics and anomaly-threshold jobs.
