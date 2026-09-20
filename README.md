@@ -24,7 +24,7 @@ The intended data flow is:
 
 ```text
 CSV in data/raw/
-  -> deduplicated, non-null RFM input in data/curated/RFM.parquet/
+  -> deduplicated, non-null, positive-value, non-cancelled RFM input in data/curated/RFM.parquet/
   -> deduplicated anomaly input in data/audit/anomalies.parquet/
 ```
 
@@ -73,7 +73,7 @@ The cleaning job is implemented and tested. The DAG structure and task dependenc
 │   └── test_pyspark_jobs.py     Project-structure check
 ├── data/
 │   ├── raw/                     Local input CSV files
-│   ├── curated/RFM.parquet/     Deduplicated, non-null RFM input
+│   ├── curated/RFM.parquet/     Clean, positive, non-cancelled RFM input
 │   ├── analytics/rfm_daily/     Reserved daily RFM results
 │   └── audit/anomalies.parquet/ Deduplicated anomaly input
 ├── docs/

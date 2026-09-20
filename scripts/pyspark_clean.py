@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Sequence
 
-from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql import DataFrame, SparkSession, functions as F
 
 
 DEFAULT_INPUT_PATH = "data/raw/data.csv"
@@ -23,9 +23,15 @@ def read_transactions(spark: SparkSession, input_path: str) -> DataFrame:
 
 
 def prepare_datasets(transactions: DataFrame) -> tuple[DataFrame, DataFrame]:
-    """Return RFM-ready and anomaly datasets using their respective null rules."""
+    """Return cleaned RFM input and a deduplicated anomaly dataset."""
     anomalies = transactions.dropDuplicates()
-    rfm = anomalies.dropna(how="any")
+    rfm = (
+        anomalies.dropna(how="any")
+        .filter(
+            ~F.upper(F.trim(F.col("InvoiceNo").cast("string"))).startswith("C")
+        )
+        .filter((F.col("Quantity") > 0) & (F.col("UnitPrice") > 0))
+    )
     return rfm, anomalies
 
 

@@ -46,12 +46,18 @@ def test_default_output_paths_follow_project_layout():
 def test_prepare_datasets_applies_each_output_rule(transactions):
     rfm, anomalies = prepare_datasets(transactions)
 
-    assert transactions.count() == 4
-    assert anomalies.count() == 3
-    assert rfm.count() == 2
-    assert anomalies.filter(F.col("CustomerID").isNull()).count() == 1
-    assert rfm.filter(F.col("CustomerID").isNull()).count() == 0
-    assert rfm.filter(F.col("Quantity") < 0).count() == 1
+    invalid_customer_id = F.col("CustomerID").isNull() | F.isnan(
+        F.col("CustomerID").cast("double")
+    )
+
+    assert transactions.count() == 8
+    assert anomalies.count() == 7
+    assert rfm.count() == 1
+    assert anomalies.filter(invalid_customer_id).count() == 2
+    assert rfm.filter(invalid_customer_id).count() == 0
+    assert rfm.filter(F.upper(F.col("InvoiceNo")).startswith("C")).count() == 0
+    assert rfm.filter(F.col("Quantity") <= 0).count() == 0
+    assert rfm.filter(F.col("UnitPrice") <= 0).count() == 0
 
 
 def test_run_cleaning_job_writes_both_parquet_outputs(spark, tmp_path):
@@ -68,5 +74,5 @@ def test_run_cleaning_job_writes_both_parquet_outputs(spark, tmp_path):
 
     assert rfm_output.is_dir()
     assert anomalies_output.is_dir()
-    assert spark.read.parquet(str(rfm_output)).count() == 2
-    assert spark.read.parquet(str(anomalies_output)).count() == 3
+    assert spark.read.parquet(str(rfm_output)).count() == 1
+    assert spark.read.parquet(str(anomalies_output)).count() == 7
