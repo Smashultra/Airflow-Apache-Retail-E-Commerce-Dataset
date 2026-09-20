@@ -37,3 +37,12 @@ Use `YYYY-MM-DD HH:mm UTC+07:00` in every decision heading.
 - Reason: Its single-file, eight-column schema directly matches the assignment and is sufficient for cleaning, RFM, churn, and anomaly tasks.
 - Consequences: The download remains outside Git and is mounted in Airflow containers at `/opt/airflow/data/raw/data.csv`.
 - Revisit when: The instructor requires relational joins or a scaled multi-table demonstration.
+
+## 2026-09-17 23:07 UTC+07:00 - Split cleaning outputs by downstream null policy
+
+- Status: Accepted
+- Context: RFM preparation requires complete rows, while anomaly analysis must retain incomplete records for later inspection.
+- Decision: `scripts/pyspark_clean.py` writes full-row-deduplicated data to both outputs, drops any row with a missing value only from `data/curated/RFM.parquet`, and writes the less restrictive output to `data/audit/anomalies.parquet`.
+- Reason: A single raw-data scan can prepare datasets with the different retention policies required by the two downstream analyses.
+- Consequences: Missing values and negative quantities remain in the anomaly input. Spark treats each `.parquet` output path as a directory of Parquet part files and overwrites that directory on each run.
+- Revisit when: The downstream RFM or anomaly jobs require a stricter schema, incremental writes, or additional business-rule filters.

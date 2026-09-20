@@ -1,4 +1,5 @@
 .env
+.venv/
 
 __pycache__/
 *.py[cod]
@@ -18,6 +19,7 @@ data/analytics/rfm_daily/*
 !data/analytics/rfm_daily/.gitkeep
 data/audit/anomalies/*
 !data/audit/anomalies/.gitkeep
+data/audit/anomalies.parquet/
 
 .idea/
 .vscode/
