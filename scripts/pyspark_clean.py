@@ -101,7 +101,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def main(argv: Sequence[str] | None = None) -> None:
     args = parse_args(argv)
-    spark = SparkSession.builder.appName("retail-pyspark-clean").getOrCreate()
+    spark = (
+        SparkSession.builder
+        .appName("retail-pyspark-clean")
+        .config("spark.sql.session.timeZone", "UTC")
+        .getOrCreate()
+    )
     try:
         run_cleaning_job(
             spark,

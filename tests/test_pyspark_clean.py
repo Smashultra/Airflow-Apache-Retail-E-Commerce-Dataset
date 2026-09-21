@@ -27,6 +27,7 @@ def spark():
         .appName("test-pyspark-clean")
         .config("spark.ui.enabled", "false")
         .config("spark.sql.shuffle.partitions", "1")
+        .config("spark.sql.session.timeZone", "UTC")
         .getOrCreate()
     )
     yield session
