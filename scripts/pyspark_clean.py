@@ -6,18 +6,40 @@ import argparse
 from collections.abc import Sequence
 
 from pyspark.sql import DataFrame, SparkSession, functions as F
+from pyspark.sql.types import (
+    DoubleType,
+    IntegerType,
+    StringType,
+    StructField,
+    StructType,
+    TimestampType,
+)
 
 
 DEFAULT_INPUT_PATH = "data/raw/data.csv"
 DEFAULT_RFM_OUTPUT_PATH = "data/curated/RFM.parquet"
 DEFAULT_ANOMALIES_OUTPUT_PATH = "data/audit/anomalies.parquet"
+TRANSACTION_SCHEMA = StructType(
+    [
+        StructField("InvoiceNo", StringType(), True),
+        StructField("StockCode", StringType(), True),
+        StructField("Description", StringType(), True),
+        StructField("Quantity", IntegerType(), True),
+        StructField("InvoiceDate", TimestampType(), True),
+        StructField("UnitPrice", DoubleType(), True),
+        StructField("CustomerID", StringType(), True),
+        StructField("Country", StringType(), True),
+    ]
+)
 
 
 def read_transactions(spark: SparkSession, input_path: str) -> DataFrame:
-    """Read the retail CSV with its header and infer the source column types."""
+    """Read retail CSV data using the stable transaction schema."""
     return (
         spark.read.option("header", True)
-        .option("inferSchema", True)
+        .option("timestampFormat", "M/d/yyyy H:mm")
+        .option("nullValue", "NaN")
+        .schema(TRANSACTION_SCHEMA)
         .csv(input_path)
     )
 

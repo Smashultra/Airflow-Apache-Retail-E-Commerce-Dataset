@@ -2,7 +2,7 @@
 
 ## Current state
 
-The collaborative project scaffold and local-mode PySpark Docker configuration are complete. On `main`, the EDA notebook explains the zero-price records, and `scripts/pyspark_clean.py` writes separate RFM-ready and anomaly Parquet datasets with stricter RFM transaction filters.
+The collaborative project scaffold and local-mode PySpark Docker configuration are complete. On `main`, the EDA notebook explains the zero-price records, and the notebook plus `scripts/pyspark_clean.py` use stable business types before writing separate RFM-ready and anomaly Parquet datasets.
 
 ## Completed
 
@@ -21,6 +21,8 @@ The collaborative project scaffold and local-mode PySpark Docker configuration a
 - Added `data/curated/RFM.parquet`, which removes full-row duplicates, missing values, cancelled invoices, non-positive quantities, and non-positive unit prices.
 - Added `data/audit/anomalies.parquet`, which removes full-row duplicates but preserves missing values and negative quantities.
 - Added focused PySpark tests for the two cleaning rules, default output paths, and Parquet round-trip writes.
+- Standardized `CustomerID` and `InvoiceNo` as identifiers (`string`), `InvoiceDate` as a datetime/timestamp, `Quantity` as an integer, and `UnitPrice` as a floating-point value in both pandas EDA and PySpark.
+- Replaced Spark CSV schema inference with an explicit transaction schema and regenerated both Parquet outputs with the new schema.
 - Normalized the DAG task IDs to the assignment names while keeping tasks as placeholders.
 - Removed generated Airflow config, logs, bytecode, and `.env` from the source tree; Git can recover the deleted tracked files.
 - No `CLAUDE.md` was created.
@@ -45,6 +47,10 @@ The collaborative project scaffold and local-mode PySpark Docker configuration a
 - Full-data `spark-submit /opt/airflow/scripts/pyspark_clean.py` completed with exit code 0.
 - RFM cleaning tests in Docker -> 3 passed; coverage includes null/NaN customer IDs, cancelled invoices, non-positive quantities, and non-positive prices.
 - Regenerated the full-data Parquet outputs in Docker; direct verification of `data/curated/RFM.parquet` -> `rows=392692`, with 0 invalid customer IDs, 0 cancelled invoices, 0 non-positive quantities, and 0 non-positive unit prices.
+- Notebook JSON/syntax and full-data pandas type check passed: 541,909 rows, 0 invalid dates, and the five requested columns have the intended dtypes.
+- `docker compose run --rm --no-deps airflow-scheduler python -m pytest -q -p no:cacheprovider tests/test_pyspark_clean.py` -> 4 passed; the Parquet round-trip test confirms both output schemas exactly match `TRANSACTION_SCHEMA`.
+- Full-data Parquet regeneration via Docker `spark-submit` completed with exit code 0; verification found `RFM=392692` rows and `anomalies=536641` rows, with matching string/timestamp/int/double schemas and 0 null parsed dates.
+- `git diff --check` passed after the schema changes; only line-ending notices were emitted.
 
 ## Unresolved risks
 
@@ -57,6 +63,7 @@ The collaborative project scaffold and local-mode PySpark Docker configuration a
 - PySpark 4.2.0 emits an upstream warning that some features may not fully support pandas 3.x; this job does not use pandas APIs.
 - Host Spark 3.5.9 cannot commit Parquet on Windows because the local Hadoop installation lacks `hadoop.dll`; use the Docker workflow, which completed successfully.
 - `.env.example` is currently deleted in the working tree by an unrelated change and was intentionally not restored as part of this task.
+- The complete Docker test command reaches 4 passing Spark tests but its repository-structure test fails because the container mounts only `scripts/`, `tests/`, and `data/`; the host structure check also identifies the already-missing `.env.example`.
 
 ## Next action
 

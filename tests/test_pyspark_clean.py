@@ -2,10 +2,17 @@ from pathlib import Path
 
 import pytest
 from pyspark.sql import SparkSession, functions as F
+from pyspark.sql.types import (
+    DoubleType,
+    IntegerType,
+    StringType,
+    TimestampType,
+)
 
 from scripts.pyspark_clean import (
     DEFAULT_ANOMALIES_OUTPUT_PATH,
     DEFAULT_RFM_OUTPUT_PATH,
+    TRANSACTION_SCHEMA,
     parse_args,
     prepare_datasets,
     read_transactions,
@@ -43,6 +50,22 @@ def test_default_output_paths_follow_project_layout():
     )
 
 
+def test_read_transactions_uses_stable_business_types(transactions):
+    expected_types = {
+        "CustomerID": StringType,
+        "InvoiceNo": StringType,
+        "InvoiceDate": TimestampType,
+        "Quantity": IntegerType,
+        "UnitPrice": DoubleType,
+    }
+
+    assert transactions.schema == TRANSACTION_SCHEMA
+    for column, expected_type in expected_types.items():
+        assert isinstance(transactions.schema[column].dataType, expected_type)
+    assert transactions.filter(F.col("InvoiceDate").isNull()).count() == 0
+    assert transactions.filter(F.col("CustomerID").isNull()).count() == 2
+
+
 def test_prepare_datasets_applies_each_output_rule(transactions):
     rfm, anomalies = prepare_datasets(transactions)
 
@@ -74,5 +97,11 @@ def test_run_cleaning_job_writes_both_parquet_outputs(spark, tmp_path):
 
     assert rfm_output.is_dir()
     assert anomalies_output.is_dir()
-    assert spark.read.parquet(str(rfm_output)).count() == 1
-    assert spark.read.parquet(str(anomalies_output)).count() == 7
+
+    written_rfm = spark.read.parquet(str(rfm_output))
+    written_anomalies = spark.read.parquet(str(anomalies_output))
+
+    assert written_rfm.count() == 1
+    assert written_anomalies.count() == 7
+    assert written_rfm.schema == TRANSACTION_SCHEMA
+    assert written_anomalies.schema == TRANSACTION_SCHEMA
