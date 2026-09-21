@@ -1,9 +1,9 @@
 InvoiceNo,StockCode,Description,Quantity,InvoiceDate,UnitPrice,CustomerID,Country
-10001,A1,Valid item,2,2026-09-01 10:00:00,12.50,12345,Vietnam
-10002,A2,Missing customer,1,2026-09-01 11:00:00,5.00,,Vietnam
-10003,A3,Negative quantity,-1,2026-09-01 12:00:00,8.00,67890,Vietnam
-C10004,A4,Cancelled invoice,1,2026-09-01 13:00:00,9.00,67890,Vietnam
-10005,A5,Zero quantity,0,2026-09-01 14:00:00,10.00,67890,Vietnam
-10006,A6,Zero price,1,2026-09-01 15:00:00,0.00,67890,Vietnam
-10007,A7,NaN customer,1,2026-09-01 16:00:00,7.00,NaN,Vietnam
-10001,A1,Valid item,2,2026-09-01 10:00:00,12.50,12345,Vietnam
+10001,A1,Valid item,2,9/1/2026 10:00,12.50,12345,Vietnam
+10002,A2,Missing customer,1,9/1/2026 11:00,5.00,,Vietnam
+10003,A3,Negative quantity,-1,9/1/2026 12:00,8.00,67890,Vietnam
+C10004,A4,Cancelled invoice,1,9/1/2026 13:00,9.00,67890,Vietnam
+10005,A5,Zero quantity,0,9/1/2026 14:00,10.00,67890,Vietnam
+10006,A6,Zero price,1,9/1/2026 15:00,0.00,67890,Vietnam
+10007,A7,NaN customer,1,9/1/2026 16:00,7.00,NaN,Vietnam
+10001,A1,Valid item,2,9/1/2026 10:00,12.50,12345,Vietnam

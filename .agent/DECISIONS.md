@@ -46,3 +46,12 @@ Use `YYYY-MM-DD HH:mm UTC+07:00` in every decision heading.
 - Reason: A single raw-data scan can prepare datasets with the different retention policies required by the two downstream analyses.
 - Consequences: Missing values, cancelled invoices, and non-positive quantities or prices remain in the anomaly input. Spark treats each `.parquet` output path as a directory of Parquet part files and overwrites that directory on each run.
 - Revisit when: The downstream RFM or anomaly jobs require a stricter schema, incremental writes, or additional business-rule filters.
+
+## 2026-09-21 10:06 UTC+07:00 - Use stable business types for retail transactions
+
+- Status: Accepted
+- Context: Pandas inferred `CustomerID` as `float64` and left `InvoiceDate` as text, while Spark inferred types independently and persisted `InvoiceDate` as a string in both Parquet outputs.
+- Decision: Treat `CustomerID` and `InvoiceNo` as string identifiers, `InvoiceDate` as a pandas datetime/Spark timestamp, `Quantity` as a 32-bit integer, and `UnitPrice` as a 64-bit floating-point value. Apply these types while reading the CSV instead of relying on inference.
+- Reason: Identifier columns are not numeric measures, timestamps should support time operations directly, and an explicit schema prevents environment- or sample-dependent Parquet schemas.
+- Consequences: Both Parquet datasets must be regenerated after this change. Missing customer IDs remain null and RFM filtering behavior remains unchanged.
+- Revisit when: The source format changes, quantities exceed the 32-bit range, or financial calculations require a fixed-precision decimal price.

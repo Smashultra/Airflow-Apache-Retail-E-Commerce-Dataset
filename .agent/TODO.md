@@ -11,6 +11,7 @@
 | TODO | Implement raw-data validation | Unassigned | - | `data/raw/data.csv` |
 | DONE | Implement PySpark cleaning job | Codex | `main` | Dataset schema |
 | DONE | Tighten RFM cleaning filters and regenerate Parquet | Codex | `main` | Existing cleaning job |
+| DONE | Standardize retail column types across EDA, Spark, and Parquet outputs | Codex | `main` | Raw dataset schema |
 | TODO | Implement RFM job | Unassigned | - | Curated schema |
 | TODO | Implement anomaly-detection job | Unassigned | - | Threshold decision |
 | TODO | Replace DAG placeholders with working operators | Unassigned | - | Spark jobs |
