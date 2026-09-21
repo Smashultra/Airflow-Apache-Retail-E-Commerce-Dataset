@@ -2,7 +2,7 @@
 
 ## Current state
 
-The collaborative project scaffold and local-mode PySpark Docker configuration are complete. On `main`, the EDA notebook explains the zero-price records, and the notebook plus `scripts/pyspark_clean.py` use stable business types before writing separate RFM-ready and anomaly Parquet datasets.
+The collaborative project scaffold and local-mode PySpark Docker configuration are complete. On `main`, the EDA notebook explains the zero-price records, and the notebook plus `scripts/pyspark_clean.py` use stable business types before writing separate RFM-ready and anomaly Parquet datasets. The RFM output now excludes known service and fee lines; the anomaly output retains them.
 
 ## Completed
 
@@ -24,6 +24,7 @@ The collaborative project scaffold and local-mode PySpark Docker configuration a
 - Standardized `CustomerID` and `InvoiceNo` as identifiers (`string`), `InvoiceDate` as a datetime/timestamp, `Quantity` as an integer, and `UnitPrice` as a floating-point value in both pandas EDA and PySpark.
 - Replaced Spark CSV schema inference with an explicit transaction schema and regenerated both Parquet outputs with the new schema.
 - Normalized the DAG task IDs to the assignment names while keeping tasks as placeholders.
+- Excluded `POST`, `M`, `DOT`, `BANK CHARGES`, `C2`, and `PADS` stock codes, plus exact `PACKING CHARGE` and `NEXT DAY CARRIAGE` descriptions, from RFM only. Matches ignore case and surrounding spaces; product rows in the same invoice remain.
 - Removed generated Airflow config, logs, bytecode, and `.env` from the source tree; Git can recover the deleted tracked files.
 - No `CLAUDE.md` was created.
 
@@ -51,6 +52,10 @@ The collaborative project scaffold and local-mode PySpark Docker configuration a
 - `docker compose run --rm --no-deps airflow-scheduler python -m pytest -q -p no:cacheprovider tests/test_pyspark_clean.py` -> 4 passed; the Parquet round-trip test confirms both output schemas exactly match `TRANSACTION_SCHEMA`.
 - Full-data Parquet regeneration via Docker `spark-submit` completed with exit code 0; verification found `RFM=392692` rows and `anomalies=536641` rows, with matching string/timestamp/int/double schemas and 0 null parsed dates.
 - `git diff --check` passed after the schema changes; only line-ending notices were emitted.
+- `docker compose run --rm --no-deps airflow-scheduler python -m pytest -q -p no:cacheprovider tests/test_pyspark_clean.py` -> 5 passed, 1 upstream PySpark pandas warning.
+- `docker compose run --rm --no-deps airflow-scheduler bash -c 'spark-submit /opt/airflow/scripts/pyspark_clean.py --input /opt/airflow/data/raw/data.csv --rfm-output /opt/airflow/data/curated/RFM.parquet --anomalies-output /opt/airflow/data/audit/anomalies.parquet'` -> exit 0; regenerated both local Parquet outputs.
+- Direct Spark read of regenerated outputs -> `RFM_ROWS=391057`, `RFM_EXCLUDED_ROWS=0`, `ANOMALIES_ROWS=536641` (unchanged anomaly row count). RFM has 1,635 fewer rows than the previous output.
+- `git diff --check` passed for the service-line update; only line-ending notices were emitted.
 
 ## Unresolved risks
 
