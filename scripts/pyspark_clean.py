@@ -19,6 +19,18 @@ from pyspark.sql.types import (
 DEFAULT_INPUT_PATH = "data/raw/data.csv"
 DEFAULT_RFM_OUTPUT_PATH = "data/curated/RFM.parquet"
 DEFAULT_ANOMALIES_OUTPUT_PATH = "data/audit/anomalies.parquet"
+RFM_EXCLUDED_STOCK_CODES = (
+    "POST",
+    "M",
+    "DOT",
+    "BANK CHARGES",
+    "C2",
+    "PADS",
+)
+RFM_EXCLUDED_DESCRIPTIONS = (
+    "PACKING CHARGE",
+    "NEXT DAY CARRIAGE",
+)
 TRANSACTION_SCHEMA = StructType(
     [
         StructField("InvoiceNo", StringType(), True),
@@ -53,6 +65,12 @@ def prepare_datasets(transactions: DataFrame) -> tuple[DataFrame, DataFrame]:
             ~F.upper(F.trim(F.col("InvoiceNo").cast("string"))).startswith("C")
         )
         .filter((F.col("Quantity") > 0) & (F.col("UnitPrice") > 0))
+        .filter(~F.upper(F.trim(F.col("StockCode"))).isin(*RFM_EXCLUDED_STOCK_CODES))
+        .filter(
+            ~F.upper(F.trim(F.col("Description"))).isin(
+                *RFM_EXCLUDED_DESCRIPTIONS
+            )
+        )
     )
     return rfm, anomalies
 

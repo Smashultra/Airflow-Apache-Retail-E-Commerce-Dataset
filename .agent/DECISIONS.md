@@ -55,3 +55,12 @@ Use `YYYY-MM-DD HH:mm UTC+07:00` in every decision heading.
 - Reason: Identifier columns are not numeric measures, timestamps should support time operations directly, and an explicit schema prevents environment- or sample-dependent Parquet schemas.
 - Consequences: Both Parquet datasets must be regenerated after this change. Missing customer IDs remain null and RFM filtering behavior remains unchanged.
 - Revisit when: The source format changes, quantities exceed the 32-bit range, or financial calculations require a fixed-precision decimal price.
+
+## 2026-09-21 16:52 UTC+07:00 - Exclude service charges from RFM transactions
+
+- Status: Accepted
+- Context: Positive, non-cancelled fee lines were still included in RFM input and could inflate monetary values or transaction counts. The raw CSV also uses numeric stock codes for packing and next-day carriage charges.
+- Decision: Exclude RFM rows with `StockCode` `POST`, `M`, `DOT`, `BANK CHARGES`, `C2`, or `PADS`, and rows with exact `Description` `PACKING CHARGE` or `NEXT DAY CARRIAGE`, after trimming and case normalization. Keep these rows in the anomaly output.
+- Reason: These are known non-product lines in the selected dataset. Exact matches protect products whose descriptions incidentally contain words such as "carriage".
+- Consequences: The RFM Parquet output must be regenerated; downstream RFM totals exclude these line items.
+- Revisit when: New input data contains other documented service codes or descriptions.

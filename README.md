@@ -24,11 +24,13 @@ The intended data flow is:
 
 ```text
 CSV in data/raw/
-  -> deduplicated, non-null, positive-value, non-cancelled RFM input in data/curated/RFM.parquet/
+  -> deduplicated, non-null, positive-value, non-cancelled RFM input without service charges in data/curated/RFM.parquet/
   -> deduplicated anomaly input in data/audit/anomalies.parquet/
 ```
 
 The cleaning job is implemented and tested. The DAG structure and task dependencies exist, but its tasks are still placeholders.
+
+RFM input excludes `StockCode` values `POST`, `M`, `DOT`, `BANK CHARGES`, `C2`, and `PADS`, plus rows whose `Description` is `PACKING CHARGE` or `NEXT DAY CARRIAGE` (case-insensitive, ignoring surrounding spaces). The anomaly input retains these rows.
 
 ## Project structure
 
