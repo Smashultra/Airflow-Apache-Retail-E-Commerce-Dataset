@@ -1,5 +1,42 @@
 # Current Handoff
 
+## Detector plan publication - 2026-09-23
+
+- Saved detailed PySpark detector plan to `.agent/plans/active/2026-09-23-pyspark-anomalies.md`; documented the accepted retrospective cutoff and scope in DECISIONS, TODO, and this handoff. Detector implementation remains pending.
+- Publish only these four detector-planning state files. The existing EDA notebook, Vietnamese guide, and archived EDA plan remain separate local changes. Plan content and `git diff --check` verified before publication.
+
+## Interpretation guide - 2026-09-23
+
+- Added `notebooks/EDA_Anomalies_Guide_VI.md`: detailed Vietnamese A-G walkthrough, current output figures, examples, denominators, keyword correction, IQR eligibility, case-review limitations and proposed detector output. Source is the executed notebook after StockCode correction; no notebook/data changes or rerun needed.
+- Verification: checked section coverage, local notebook link, UTF-8 text, numeric examples against saved output and `git diff --check`. No commit/push.
+
+## Description keyword correction - 2026-09-23
+
+- Fixed anomalies EDA keyword inference: full-word patterns plus same-StockCode product-name references from at least two distinct positive, non-cancelled sales invoices, excluding known services/special codes. All qualifying name variants are retained. Product-name matches are separated from unresolved no-reference matches; remaining keyword flags are hypotheses, not confirmed stock operations.
+- Regression: StockCode 85084 / HOLLY TOP CHRISTMAS STOCKING no longer matches stock_words. Embedded fixture covers names with keyword CHECK, damage/stock notes, another code sharing a name, missing description/code, and repeated lines in one invoice.
+- Missing-ID counts after correction: stock_words 246 (previous 551), damage_words 163 (previous 1,436), loss_words 20 (previous 129), coding_words 31. Keyword product-name matches 293; unresolved references 28. Historical counts in earlier reports are superseded.
+- Verification: `python -m nbconvert --to notebook --execute --inplace --ExecutePreprocessor.timeout=300 notebooks/EDA_Anomalies.ipynb` exited 0; 11 code cells executed without error, focused regression and existing assertions passed, input SHA-256 unchanged. Notebook schema/syntax and `git diff --check` passed.
+- Limits: references are inferred from retrospective paid sales, not an authoritative product catalog. No source data, cleaning, RFM or detector changes; no commit/push. Next: review the newly displayed name/reference evidence before selecting detector rules.
+
+
+## Anomalies EDA completed - 2026-09-22
+
+- Created and executed `notebooks/EDA_Anomalies.ipynb` in Vietnamese. PyArrow reads existing Parquet; pandas/matplotlib provide analysis. No detector, cleaning, RFM, Airflow or input data changes.
+- Current Parquet: 536,641 rows; 135,037 missing CustomerID (25.16%), across 3,710 entirely unidentified invoices; no mixed-ID invoices observed. Of missing-ID rows, 126,009 qualify for at least one product IQR check; 10,102 exceed at least one upper 3-IQR fence (review candidates, not verified anomalies).
+- Reconciliation: CSV after deduplication and Parquet agree in row count and the multiset of seven non-Description columns. Full-row comparison reports 2,540 differing combinations; paired examples show different quoting in Description. Do not claim identical input content or silently repair it.
+- Verification: `python -m nbconvert --to notebook --execute --inplace --ExecutePreprocessor.timeout=300 notebooks/EDA_Anomalies.ipynb` -> exit 0, all 10 code cells executed, no error outputs. Notebook assertions verify IQR boundaries, eligibility, cohort/row preservation, original columns and unchanged SHA-256 for all input files. Both chart outputs visually inspected. `git diff --check` passed.
+- Windows sandbox blocked Jupyter secure connection-file creation; authorized execution outside sandbox succeeded without ACL changes. ZMQ emits a harmless Windows event-loop warning.
+- Independent source review corrected boundary-test fixtures, a string syntax issue and all-zero-invoice eligibility with missing prices; final fresh-kernel execution passed after fixes. Focused tests are embedded in the notebook as approved.
+- Next action: review EDA evidence and choose detector rules/baseline scope. IQR is retrospective; business description flags are hypotheses. No precision/recall claim or production threshold acceptance. Existing sync notes preserved; no commit/push.
+
+
+## Latest repository sync - 2026-09-22
+
+- Pulled `origin/main` with `git pull --ff-only origin main`: fast-forward from `be75e6d` to `b260d6b` (8 files updated).
+- Verification: `git rev-list --left-right --count HEAD...origin/main` returned `0 0`; `git diff --check` passed; working tree was clean immediately after the pull.
+- Only this sync record and its TODO entry were added locally afterward. No runtime tests were run for this Git-only task.
+- Risks and next action: incoming application behavior is not verified in this session; run focused tests before executing the updated jobs.
+
 ## Current state
 
 The collaborative project scaffold and local-mode PySpark Docker configuration are complete. On `main`, the EDA notebook explains the zero-price records, and the notebook plus `scripts/pyspark_clean.py` use stable business types before writing separate RFM-ready and anomaly Parquet datasets. The RFM output now excludes known service and fee lines; the anomaly output retains them.
