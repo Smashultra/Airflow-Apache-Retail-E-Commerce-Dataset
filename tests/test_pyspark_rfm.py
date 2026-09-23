@@ -21,6 +21,7 @@ from pyspark.sql.types import (  # noqa: E402
 
 from scripts.pyspark_rfm import (  # noqa: E402
     add_rfm_scores,
+    add_rfm_segment,
     compute_rfm,
     parse_args,
     select_history,
@@ -207,6 +208,75 @@ def test_only_constant_metric_gets_one(spark):
     assert actual["b"] == (5, 1, 5, "515")
 
 
+def segments(spark, rows):
+    """rows: list of (CustomerID, R_score, F_score, M_score)."""
+    df = spark.createDataFrame(
+        rows, "CustomerID string, R_score int, F_score int, M_score int"
+    )
+    return {r.CustomerID: (r.FM_score, r.Segment) for r in add_rfm_segment(df).collect()}
+
+
+# Mỗi nhánh trong add_rfm_segment phải cho đúng nhãn business kỳ vọng,
+# và FM_score phải đúng công thức trung bình F/M làm tròn lên ở mốc .5.
+def test_add_rfm_segment_assigns_expected_labels(spark):
+    rows = [
+        ("champion", 5, 5, 5),        # R>=4, FM>=4
+        ("loyal", 3, 4, 3),           # R>=3, FM=round((4+3)/2)=4 -> Loyal (không đủ R cho Champions)
+        ("potential", 5, 1, 2),       # R>=4, FM=round((1+2)/2)=2 -> Potential Loyalist
+        ("at_risk", 1, 5, 4),         # R<=2, FM=round((5+4)/2)=5 -> At Risk
+        ("hibernating", 1, 1, 2),     # R<=2, FM=round((1+2)/2)=2 -> Hibernating
+        ("need_attention", 3, 1, 2),  # R=3, FM=2 -> không khớp nhánh nào khác -> Need Attention
+    ]
+    actual = segments(spark, rows)
+    assert actual["champion"] == (5, "Champions")
+    assert actual["loyal"] == (4, "Loyal Customers")
+    assert actual["potential"] == (2, "Potential Loyalist")
+    assert actual["at_risk"] == (5, "At Risk")
+    assert actual["hibernating"] == (2, "Hibernating")
+    assert actual["need_attention"] == (2, "Need Attention")
+
+
+# FM_score là trung bình (F_score, M_score) làm tròn lên ở mốc .5 (2.5 -> 3),
+# không phải làm tròn kiểu ngân hàng (banker's rounding) hay làm tròn xuống.
+def test_add_rfm_segment_fm_score_rounds_half_up(spark):
+    actual = segments(spark, [("a", 3, 2, 3)])  # (2+3)/2 = 2.5 -> phải làm tròn thành 3
+    assert actual["a"][0] == 3
+
+
+# Toàn bộ 25 tổ hợp (R_score, FM_score) từ 1-5 đều phải rơi vào đúng 1 trong 6
+# nhãn hợp lệ - không có tổ hợp nào "lọt lưới" ra ngoài danh sách nhãn.
+def test_add_rfm_segment_covers_every_combination(spark):
+    valid_segments = {
+        "Champions", "Loyal Customers", "Potential Loyalist",
+        "At Risk", "Hibernating", "Need Attention",
+    }
+    rows = [
+        (f"r{r}f{f}m{m}", r, f, m)
+        for r in range(1, 6) for f in range(1, 6) for m in range(1, 6)
+    ]
+    actual = segments(spark, rows)
+    assert set(v[1] for v in actual.values()) <= valid_segments
+    assert len(actual) == 125
+
+
+# validate_rfm_output phải phát hiện nếu Segment/FM_score bị ghi sai lệch
+# so với chính R_score/F_score/M_score đã tính (ví dụ do sửa tay/bug ở bước khác).
+def test_validate_rfm_output_rejects_inconsistent_segment(spark):
+    df = sample(spark)
+    output = add_rfm_segment(
+        add_rfm_scores(compute_rfm(select_history(df, "2011-12-10"), "2011-12-10"))
+    )
+    # Đảo nhãn: bất kể giá trị gốc là gì, nhãn mới luôn khác nhãn gốc,
+    # nên chắc chắn không khớp với công thức tính từ R/F/M_score.
+    corrupted = output.withColumn(
+        "Segment",
+        F.when(F.col("Segment") == "Champions", F.lit("Hibernating"))
+        .otherwise(F.lit("Champions")),
+    )
+    with pytest.raises(ValueError, match="invalid metrics"):
+        validate_rfm_output(corrupted, "2011-12-10")
+
+
 # 3. Test history selection and RFM metric computation.
 def sample(spark):
     return spark.createDataFrame([
@@ -328,6 +398,7 @@ def test_metrics_and_cutoff(spark):
     df = sample(spark)
     validate_curated_contract(df)
     output = add_rfm_scores(compute_rfm(select_history(df, "2011-12-10"), "2011-12-10"))
+    output = add_rfm_segment(output)
     validate_rfm_output(output, "2011-12-10")
     row = output.first()
     assert (row.Recency, row.Frequency, row.Monetary) == (1, 2, Decimal("110.00"))
@@ -343,7 +414,7 @@ def test_write_rfm_writes_partitioned_parquet_and_overwrites(spark, tmp_path):
     output = add_rfm_scores(
         compute_rfm(select_history(sample(spark), run_date), run_date)
     )
-
+    output = add_rfm_segment(output)
     output_path = write_rfm(output, str(output_root), run_date)
     partition_path = output_root / f"run_date={run_date}"
 
@@ -370,6 +441,9 @@ def test_write_rfm_overwrite_preserves_other_dates(spark, tmp_path):
     second_output = add_rfm_scores(
         compute_rfm(select_history(transactions, second_date), second_date)
     )
+    first_output = add_rfm_segment(first_output)
+    second_output = add_rfm_segment(second_output)
+
     write_rfm(first_output, output_root, first_date)
     write_rfm(second_output, output_root, second_date)
 

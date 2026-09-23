@@ -243,6 +243,49 @@ def add_rfm_scores(rfm: DataFrame) -> DataFrame:
                    for c in ("R_score", "F_score", "M_score"))),
     )
 
+def _fm_score_expr() -> "F.Column":
+    """Rounded-half-up average of F_score and M_score, as a 1-5 integer."""
+    return F.floor(
+        (F.col("F_score") + F.col("M_score") + F.lit(1)) / F.lit(2)
+    ).cast("int")
+
+def _segment_expr(r_score: "F.Column", fm_score: "F.Column") -> "F.Column":
+    """Business segment rules shared by add_rfm_segment and validate_rfm_output.
+    """
+    return (
+        F.when((r_score >= 4) & (fm_score >= 4), "Champions")
+        .when((r_score >= 3) & (fm_score >= 3), "Loyal Customers")
+        .when((r_score >= 4) & (fm_score <= 2), "Potential Loyalist")
+        .when((r_score <= 2) & (fm_score >= 4), "At Risk")
+        .when((r_score <= 2) & (fm_score <= 2), "Hibernating")
+        .otherwise("Need Attention")
+    )
+
+
+# 5b. Map RFM scores to a business-friendly customer segment.
+def add_rfm_segment(result: DataFrame) -> DataFrame:
+    """Assign a segment label from R_score/F_score/M_score (each 1-5).
+
+    Rules (see _segment_expr) are evaluated in priority order (first match
+    wins), covering every possible (R_score, FM_score) pair exactly once:
+      Champions          R>=4 and FM>=4  Mua gần đây, thường xuyên, chi nhiều.
+      Loyal Customers    R>=3 and FM>=3  Khách trung thành, vẫn hoạt động tốt.
+      Potential Loyalist R>=4 and FM<=2  Mới/mua gần đây nhưng tần suất & chi tiêu còn thấp.
+      At Risk            R<=2 and FM>=4  Từng mua nhiều/thường xuyên nhưng đã lâu không quay lại.
+      Hibernating        R<=2 and FM<=2  Ít hoạt động, giá trị thấp, gần như đã rời bỏ.
+      Need Attention     (còn lại)       Ở giữa, chưa rõ xu hướng, cần theo dõi thêm.
+
+    "Champions"/"Loyal Customers" answer the business ask for high-value
+    customers; "At Risk"/"Hibernating" answer the ask for inactive
+    accounts and churn risk.
+    """
+    fm_score = _fm_score_expr()
+    return (
+        result
+        .withColumn("FM_score", fm_score)
+        .withColumn("Segment", _segment_expr(F.col("R_score"), F.col("FM_score")))
+    )
+
 
 # Check results before writing to output folder
 def validate_rfm_output(result: DataFrame, run_date: str) -> None:
@@ -252,6 +295,7 @@ def validate_rfm_output(result: DataFrame, run_date: str) -> None:
     required = {
         "CustomerID", "run_date", "LastPurchaseDate", "Recency",
         "Frequency", "Monetary", "R_score", "F_score", "M_score", "RFM_score",
+        "FM_score", "Segment",
     }
     missing = required - set(result.columns)
     if missing:
@@ -282,6 +326,26 @@ def validate_rfm_output(result: DataFrame, run_date: str) -> None:
     expected_code = F.concat(*(F.col(c).cast("string")
                               for c in ("R_score", "F_score", "M_score")))
     invalid = invalid | F.col("RFM_score").isNull() | (F.col("RFM_score") != expected_code)
+
+    expected_fm = _fm_score_expr()
+    invalid = (
+        invalid
+        | F.col("FM_score").isNull()
+        | (~F.col("FM_score").isin(1, 2, 3, 4, 5))
+        | (F.col("FM_score") != expected_fm)
+    )
+    valid_segments = (
+        "Champions", "Loyal Customers", "Potential Loyalist",
+        "At Risk", "Hibernating", "Need Attention",
+    )
+    expected_segment = _segment_expr(F.col("R_score"), F.col("FM_score"))
+    invalid = (
+        invalid
+        | F.col("Segment").isNull()
+        | (~F.col("Segment").isin(*valid_segments))
+        | (F.col("Segment") != expected_segment)
+    )
+
     if not result.filter(invalid).isEmpty():
         raise ValueError("RFM output contains invalid metrics, scores, or run_date.")
     if not result.groupBy("CustomerID").count().filter(F.col("count") > 1).isEmpty():
@@ -323,7 +387,7 @@ def main():
         history = select_history(transactions, args.run_date)
 
         rfm = compute_rfm(history, args.run_date)
-        result = add_rfm_scores(rfm).cache()
+        result = add_rfm_segment(add_rfm_scores(rfm)).cache()
         customer_count = result.count()
 
         if customer_count < 5:
@@ -352,3 +416,115 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+
+# # Check results before writing to output folder
+# def validate_rfm_output(result: DataFrame, run_date: str) -> None:
+#     """Reject invalid output before replacing a daily partition."""
+#     if date.fromisoformat(run_date).isoformat() != run_date:
+#         raise ValueError("run_date must use YYYY-MM-DD.")
+#     required = {
+#         "CustomerID", "run_date", "LastPurchaseDate", "Recency",
+#         "Frequency", "Monetary", "R_score", "F_score", "M_score", "RFM_score",
+#     }
+#     missing = required - set(result.columns)
+#     if missing:
+#         raise ValueError(f"RFM output is missing columns: {sorted(missing)}")
+#     if result.isEmpty():
+#         raise ValueError("RFM output is empty.")
+
+#     cutoff = F.lit(run_date).cast("date")
+#     invalid = (
+#         F.col("CustomerID").isNull()
+#         | (F.trim(F.col("CustomerID")) == "")
+#         | F.col("run_date").isNull()
+#         | (F.col("run_date") != cutoff)
+#         | F.col("LastPurchaseDate").isNull()
+#         | (F.col("LastPurchaseDate") >= cutoff)
+#         | F.col("Recency").isNull()
+#         | (F.col("Recency") < 1)
+#         | (F.col("Recency") != F.datediff(cutoff, F.to_date("LastPurchaseDate")))
+#         | F.col("Frequency").isNull()
+#         | (F.col("Frequency") < 1)
+#         | F.col("Monetary").isNull()
+#         | (F.col("Monetary") < 0)
+#         | F.isnan(F.col("Monetary").cast("double"))
+#         | (F.abs(F.col("Monetary").cast("double")) == F.lit(float("inf")))
+#     )
+#     for column in ("R_score", "F_score", "M_score"):
+#         invalid = invalid | F.col(column).isNull() | (~F.col(column).isin(1, 2, 3, 4, 5))
+#     expected_code = F.concat(*(F.col(c).cast("string")
+#                               for c in ("R_score", "F_score", "M_score")))
+#     invalid = invalid | F.col("RFM_score").isNull() | (F.col("RFM_score") != expected_code)
+#     if not result.filter(invalid).isEmpty():
+#         raise ValueError("RFM output contains invalid metrics, scores, or run_date.")
+#     if not result.groupBy("CustomerID").count().filter(F.col("count") > 1).isEmpty():
+#         raise ValueError("RFM output contains duplicate customers.")
+
+
+# # 6. Write results for the current cutoff date.
+# def write_rfm(result: DataFrame, output_root: str, run_date: str) -> str:
+#     """Overwrite only the partition for the current cutoff date."""
+#     validate_rfm_output(result, run_date)
+#     output_path = f"{output_root.rstrip('/')}/run_date={run_date}"
+#     (
+#         result.drop("run_date")
+#         .write.mode("overwrite")
+#         .parquet(output_path)
+#     )
+#     return output_path
+
+
+# # 7. Run the complete RFM job.
+# def main():
+#     args = parse_args()
+#     spark = None
+#     result = None
+
+#     try:
+#         spark = (
+#             SparkSession.builder
+#             .appName("CalculateRFM")
+#             .config("spark.sql.session.timeZone", "UTC")
+#             .config("spark.sql.ansi.enabled", "true")
+#             .getOrCreate()
+#         )
+
+#         logger.info("Starting RFM job: input=%s, run_date=%s",
+#                     args.input, args.run_date)
+#         transactions = spark.read.parquet(args.input)
+#         validate_curated_contract(transactions)
+#         history = select_history(transactions, args.run_date)
+
+#         rfm = compute_rfm(history, args.run_date)
+#         result = add_rfm_scores(rfm).cache()
+#         customer_count = result.count()
+
+#         if customer_count < 5:
+#             logger.warning(
+#                 "Only %s customers found: relative scores use a small population "
+#                 "and may not cover all five levels.",
+#                 customer_count,
+#             )
+
+#         output_path = write_rfm(result, args.output, args.run_date)
+#         logger.info("RFM job completed: customers=%s, output=%s",
+#                     customer_count, output_path)
+
+#     except Exception:
+#         logger.exception("RFM job failed.")
+#         raise
+
+#     finally:
+#         try:
+#             if result is not None:
+#                 result.unpersist()
+#         finally:
+#             if spark is not None:
+#                 spark.stop()
+
+
+# if __name__ == "__main__":
+#     main()
