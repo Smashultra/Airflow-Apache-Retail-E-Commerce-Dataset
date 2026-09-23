@@ -243,6 +243,35 @@ def test_select_history_boundary_exact_cutoff(spark):
     invoices = [row.InvoiceNo for row in history.collect()]
     assert invoices == ["i1"]
 
+# Khi có cột year/month (dữ liệu curated partitioned), select_history phải
+# loại đúng partition không liên quan trước, kết quả cuối vẫn giống hệt như
+# không có year/month (chỉ khác cách Spark đọc dữ liệu, không khác kết quả).
+def test_select_history_prunes_partitions_when_year_month_present(spark):
+    df = spark.createDataFrame(
+        [
+            ("a", "i1", datetime(2011, 8, 15, tzinfo=timezone.utc), 1, 10., 2011, 8),
+            ("a", "i2", datetime(2011, 9, 5, tzinfo=timezone.utc), 1, 20., 2011, 9),
+            # Nằm trong tháng cutoff nhưng sau ngày cutoff -> vẫn phải bị loại
+            # bởi filter InvoiceDate, dù year/month khớp.
+            ("a", "i3", datetime(2011, 9, 20, tzinfo=timezone.utc), 1, 999., 2011, 9),
+            # Partition ở tương lai -> phải bị loại bởi cả 2 lớp filter.
+            ("a", "i4", datetime(2012, 1, 1, tzinfo=timezone.utc), 1, 999., 2012, 1),
+        ],
+        "CustomerID string, InvoiceNo string, InvoiceDate timestamp, "
+        "Quantity int, UnitPrice double, year int, month int",
+    )
+
+    history = select_history(df, "2011-09-10")
+    invoices = {row.InvoiceNo for row in history.collect()}
+    assert invoices == {"i1", "i2"}
+
+
+# Không có year/month thì hành vi giữ nguyên như trước (chỉ lọc InvoiceDate).
+def test_select_history_without_partition_columns_still_filters_by_date(spark):
+    history = select_history(sample(spark), "2011-12-10")
+    invoices = {row.InvoiceNo for row in history.collect()}
+    assert invoices == {"i1", "i2"}
+
 
 # Nhiều khách hàng cùng lúc: đảm bảo groupBy tách đúng theo từng CustomerID,
 # không bị lẫn Frequency/Monetary giữa các khách.

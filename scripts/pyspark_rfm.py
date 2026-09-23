@@ -140,6 +140,14 @@ def select_history(
     run_date: str,
 ) -> DataFrame:
     cutoff = F.lit(run_date).cast("date")
+    cutoff_date = date.fromisoformat(run_date)
+
+    if {"year", "month"}.issubset(df.columns):
+        df = df.filter(
+            (F.col("year") < F.lit(cutoff_date.year))
+            | ((F.col("year") == F.lit(cutoff_date.year))
+            & (F.col("month") <= F.lit(cutoff_date.month)))
+        )
 
     history = df.filter(
         F.col("InvoiceDate") < cutoff
