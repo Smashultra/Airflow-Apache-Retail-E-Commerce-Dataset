@@ -20,6 +20,7 @@ data/analytics/rfm_daily/*
 data/audit/anomalies/*
 !data/audit/anomalies/.gitkeep
 data/audit/anomalies.parquet/
+data/audit/anomaly_results*/
 
 .idea/
 .vscode/

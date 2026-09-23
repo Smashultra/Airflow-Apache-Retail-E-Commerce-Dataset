@@ -1,8 +1,15 @@
 # Current Handoff
 
+## PySpark anomaly detector - 2026-09-23
+
+- Implemented `scripts/pyspark_anomalies.py`, focused Spark tests, README usage, and an ignore rule for generated date partitions. Six business checks and three exact upper IQR checks retain every pre-cutoff source row and explain each status. No Airflow wiring, source repair, or fraud labeling.
+- Verification: Docker `python -m pytest -q -p no:cacheprovider /opt/airflow/tests/test_pyspark_clean.py /opt/airflow/tests/test_pyspark_rfm.py /opt/airflow/tests/test_pyspark_anomalies.py` -> 50 passed, one upstream pandas warning. Direct `spark-submit --master local[2] --driver-memory 3g` with run-date 2011-12-10 -> exit 0, 536,641 rows in the fresh ignored `data/audit/anomaly_results_verification_2026-09-23/run_date=2011-12-10/`. Written Parquet read-back confirmed the exact multiset of eight original columns and nine checks per row. Input directory SHA-256 before/after: `cb1647b8f07eec5bd2fbb772aaff61b3739ef6efa4a2b5a034facced6dd0c55c`. `python -m py_compile scripts/pyspark_anomalies.py tests/test_pyspark_anomalies.py` and `git diff --check` passed.
+- Results: 40,051 unique rows have at least one flag. Business rule counts match the notebook exactly (0 cancelled with nonnegative quantity, 1,336 negative quantity outside C, 2 negative prices, 395 zero prices in priced invoices, 2,115 all-zero invoices, 0 multiple customer IDs). Quantity IQR matches at 24,869; Spark price IQR is 7,607 versus notebook 7,588, and line-value IQR is 26,637 versus 26,639. The 19 and 2 row differences are observations exactly on floating-point fences: Spark and pandas quartile calculations differ by about one unit in the last decimal place for stock codes 85025C, 23272, 16014, and 16012. The eligible row counts match.
+- Risks and next action: Review flags are retrospective candidates without validated labels. The default 1 GB Spark heap ran out of memory on full data; the documented two-worker, 3 GB setting passed with Docker reporting about 8 GB available. The unrelated host structure test still fails because `.env.example` is absent. The earlier EDA notebook, guide, and archived EDA plan were committed and pushed separately as `3a0a9a6`; detector publication was requested on 2026-09-23. Next: review detector results and wire the DAG only under its own task.
+
 ## Detector plan publication - 2026-09-23
 
-- Saved detailed PySpark detector plan to `.agent/plans/active/2026-09-23-pyspark-anomalies.md`; documented the accepted retrospective cutoff and scope in DECISIONS, TODO, and this handoff. Detector implementation remains pending.
+- Saved detailed PySpark detector plan, now archived at `.agent/plans/archive/2026-09-23-pyspark-anomalies.md`; documented the accepted retrospective cutoff and scope in DECISIONS, TODO, and this handoff. At that planning checkpoint, implementation was pending.
 - Publish only these four detector-planning state files. The existing EDA notebook, Vietnamese guide, and archived EDA plan remain separate local changes. Plan content and `git diff --check` verified before publication.
 
 ## Interpretation guide - 2026-09-23
@@ -97,7 +104,7 @@ The collaborative project scaffold and local-mode PySpark Docker configuration a
 ## Unresolved risks
 
 - The Docker image builds and PySpark runs, but the complete Airflow/PostgreSQL service stack has not been initialized or smoke-tested.
-- The anomaly-threshold method is not selected yet.
+- The anomaly IQR multiplier 3 is provisional and has not been validated against labels.
 - Cell 15's seven reason groups are keyword-based interpretations of free-text `Description` values; 51 rows remain explicitly classified as unclear rather than being over-interpreted.
 - The remaining zero-price rows do not contain a definitive reason label; the new cell distinguishes evidence-backed invoice contexts and explicitly treats gifts/promotions versus missing prices as unresolved possibilities.
 - The four invoice-level explanations for the seven suspicious rows remain evidence-based hypotheses because the source data has no explicit reason field.
@@ -109,4 +116,4 @@ The collaborative project scaffold and local-mode PySpark Docker configuration a
 
 ## Next action
 
-Wire `scripts/pyspark_clean.py` into the `submit_pyspark_etl` DAG task, then implement the downstream RFM metrics and anomaly-threshold jobs.
+Review the anomaly audit output, then wire the existing cleaning, RFM, and anomaly jobs into the DAG under a separate task. Raw-data validation and the full Airflow/PostgreSQL smoke test remain open.

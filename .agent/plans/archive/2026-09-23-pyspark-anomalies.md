@@ -1,7 +1,7 @@
 # Kế hoạch triển khai PySpark anomalies detection
 
 - Ngày: 2026-09-23.
-- Trạng thái: active, thiết kế đã chốt; chưa triển khai detector.
+- Trạng thái: hoàn thành, lưu trữ sau kiểm chứng.
 - Owner: Codex. Nhánh hiện tại: main.
 - Nguồn yêu cầu: kế hoạch chi tiết được người dùng yêu cầu lưu và xuất bản trong cuộc trao đổi.
 - Cơ sở: EDA anomalies và bản sửa đối chiếu Description theo StockCode. Notebook/hướng dẫn đang có cục bộ; kế hoạch này tự chứa đặc tả để triển khai.
@@ -174,15 +174,15 @@ Gom thống kê ba biến trong một bảng theo sản phẩm, join một lần
 
 ## 5. Kiểm thử và nghiệm thu
 
-- [ ] CLI: ngày sai, multiplier không hữu hạn/không dương, min-samples sai.
-- [ ] Ngày: trước/ngay/sau cutoff, null ngày; dữ liệu tương lai không vào tham chiếu hoặc output.
-- [ ] Data quality: thiếu ID vẫn đánh giá; null/NaN/infinity đúng cờ; số âm không mặc định lỗi kiểu.
-- [ ] Description: 85084/STOCKING; CHECK/MOULD là tên cùng mã; nhiều tên; mã khác; thiếu tên; hai dòng một hóa đơn không đạt tham chiếu.
-- [ ] Mỗi business rule có positive/negative; hóa đơn [0,null], [0,positive,null], toàn 0; nhiều ID; thiếu một phần/toàn bộ ID; thiếu InvoiceNo.
-- [ ] IQR: Q1/Q3 nội suy biết trước; bằng/vượt ngưỡng; đủ/thiếu 30 mẫu; IQR=0; thiếu ID; phí/hủy bị loại khỏi tham chiếu.
-- [ ] Bảo toàn số dòng và đa tập tám cột gốc, đủ 9 check results, không fanout.
-- [ ] Parquet round-trip; overwrite ngày hiện tại không ảnh hưởng ngày khác; chặn đường dẫn chồng lấn.
-- [ ] Tập rỗng hợp lệ: ghi output rỗng đúng schema, log rõ; không tạo ngưỡng giả.
+- [x] CLI: ngày sai, multiplier không hữu hạn/không dương, min-samples sai.
+- [x] Ngày: trước/ngay/sau cutoff, null ngày; dữ liệu tương lai không vào tham chiếu hoặc output.
+- [x] Data quality: thiếu ID vẫn đánh giá; null/NaN/infinity đúng cờ; số âm không mặc định lỗi kiểu.
+- [x] Description: 85084/STOCKING; CHECK/MOULD là tên cùng mã; nhiều tên; mã khác; thiếu tên; hai dòng một hóa đơn không đạt tham chiếu.
+- [x] Mỗi business rule có positive/negative; hóa đơn [0,null], [0,positive,null], toàn 0; nhiều ID; thiếu một phần/toàn bộ ID; thiếu InvoiceNo.
+- [x] IQR: Q1/Q3 nội suy biết trước; bằng/vượt ngưỡng; đủ/thiếu 30 mẫu; IQR=0; thiếu ID; phí/hủy bị loại khỏi tham chiếu.
+- [x] Bảo toàn số dòng và đa tập tám cột gốc, đủ 9 check results, không fanout.
+- [x] Parquet round-trip; overwrite ngày hiện tại không ảnh hưởng ngày khác; chặn đường dẫn chồng lấn.
+- [x] Tập rỗng hợp lệ: ghi output rỗng đúng schema, log rõ; không tạo ngưỡng giả.
 
 Chạy tests job mới và regression cleaning/RFM trong Docker. Nếu daemon chưa chạy, báo blocker chính xác; kiểm tra syntax không thay Spark test.
 
@@ -192,4 +192,11 @@ Hoàn thành khi job/test chạy thành công, output truy được bằng chứ
 
 ## 6. Trạng thái bàn giao
 
-Kế hoạch được xuất bản riêng theo yêu cầu người dùng. Detector vẫn chưa triển khai. Việc triển khai không bao gồm commit/push tự động hoặc tích hợp Airflow; cần yêu cầu riêng cho các hành động đó. Các notebook, hướng dẫn và thay đổi .agent trước đó được giữ nguyên ở working tree nếu chưa được chọn vào commit xuất bản kế hoạch.
+Kế hoạch được xuất bản riêng theo yêu cầu người dùng. Phạm vi thực thi không bao gồm tích hợp Airflow hay tự động commit/push detector. Notebook EDA, hướng dẫn và kế hoạch EDA lưu trữ đã được commit/push riêng tại `3a0a9a6` theo yêu cầu tiếp theo của người dùng.
+
+## 7. Kết quả triển khai
+
+- Detector, test, README và ignore rule đã triển khai. `docker compose run --rm --no-deps airflow-scheduler python -m pytest -q -p no:cacheprovider /opt/airflow/tests/test_pyspark_clean.py /opt/airflow/tests/test_pyspark_rfm.py /opt/airflow/tests/test_pyspark_anomalies.py`: 50 passed, 1 cảnh báo pandas từ PySpark.
+- Chạy dữ liệu thật bằng `spark-submit --master local[2] --driver-memory 3g`, run-date 2011-12-10: exit 0, 536.641 dòng. Đọc lại Parquet xác nhận đa tập tám cột gốc bằng input, mỗi dòng có chín check. SHA-256 thư mục input trước/sau không đổi: `cb1647b8f07eec5bd2fbb772aaff61b3739ef6efa4a2b5a034facced6dd0c55c`.
+- Sáu cờ nghiệp vụ và Quantity IQR khớp notebook. UnitPrice IQR lệch +19 và line-value IQR lệch -2 dòng vì các giá trị đúng bằng ngưỡng bị ảnh hưởng bởi sai khác biểu diễn số thực ở phân vị Spark và pandas; đã xác định bốn StockCode liên quan trong thư mục kiểm chứng cục bộ.
+- Output kiểm chứng mới nằm ở `data/audit/anomaly_results_verification_2026-09-23/` và bị Git bỏ qua. Chưa nối Airflow. Bộ nhớ mặc định 1 GB của Spark không đủ; cấu hình chạy đạt được ghi trong README. Kiểm tra cấu trúc host không liên quan vẫn thất bại do thiếu `.env.example`.

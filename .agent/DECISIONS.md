@@ -68,11 +68,11 @@ Use `YYYY-MM-DD HH:mm UTC+07:00` in every decision heading.
 
 ## 2026-09-23 15:30 UTC+07:00 - PySpark anomaly assessment scope
 
-- Status: Accepted for implementation; detector is not implemented yet.
+- Status: Accepted and implemented.
 - Context: The EDA retains 135,037 rows without CustomerID, most of which remain eligible for product, transaction and time checks. Statistical flags are review candidates, and keyword interpretations require same-StockCode product-name context.
 - Decision: Implement `scripts/pyspark_anomalies.py` in PySpark. Retain every source row in scope and all eight original columns; keep data-quality flags, business context and anomaly checks distinct. Evaluate retrospectively using rows with `InvoiceDate < run_date`; allow rows with missing dates only in applicable business checks. Do not impute CustomerID or automatically drop/repair/label fraud.
 - Decision: V1 uses six explainable business checks and upper product-level IQR checks for Quantity, UnitPrice and line value. Start with multiplier 3 and minimum 30 eligible rows; require positive IQR; do not fallback to global thresholds. Record each check as flagged, not_flagged or not_applied with reason and evidence. Aggregate status is computed after all checks; an inapplicable check does not imply the transaction is unassessable.
 - Decision: Write results to a date partition under `data/audit/anomaly_results`, overwriting only the requested run-date partition after path-safety and row-preservation checks.
 - Reason: This keeps missing-ID transactions useful for transaction-level analysis while preserving traceability and avoiding unsupported conclusions.
-- Consequences: IQR thresholds are retrospective review aids, not validated fraud thresholds or online detection. Full implementation and acceptance criteria are in `.agent/plans/active/2026-09-23-pyspark-anomalies.md`.
+- Consequences: IQR thresholds are retrospective review aids, not validated fraud thresholds or online detection. Implementation and acceptance evidence are in `.agent/plans/archive/2026-09-23-pyspark-anomalies.md`.
 - Revisit when: There are validated anomaly labels, a need to score new transactions using past-only reference data, or domain-approved alternative handling for sparse/zero-IQR products.

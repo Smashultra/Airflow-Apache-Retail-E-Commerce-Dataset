@@ -2,7 +2,7 @@
 
 | Status | Task | Owner | Branch | Dependency |
 |---|---|---|---|---|
-| TODO | Implement PySpark anomaly detector per accepted scope | Codex | `main` | `.agent/plans/active/2026-09-23-pyspark-anomalies.md` |
+| DONE | Implement PySpark anomaly detector per accepted scope | Codex | `main` | `.agent/plans/archive/2026-09-23-pyspark-anomalies.md` |
 | DONE | Write Vietnamese A-G anomalies EDA interpretation guide | Codex | `main` | Current executed notebook outputs |
 | DONE | Validate description keyword flags against product names by StockCode | Codex | `main` | User correction; anomalies EDA |
 | DONE | Implement and execute standalone anomalies EDA notebook | Codex | `main` | Approved EDA-only plan; local CSV and Parquet |
@@ -19,7 +19,7 @@
 | DONE | Exclude service and fee lines from RFM Parquet and refresh related checks/docs | Codex | `main` | Existing cleaning job and raw dataset |
 | DONE | Standardize retail column types across EDA, Spark, and Parquet outputs | Codex | `main` | Raw dataset schema |
 | TODO | Implement RFM job | Unassigned | - | Curated schema |
-| TODO | Implement anomaly-detection job from active 2026-09-23 plan | Codex | `main` | `.agent/plans/active/2026-09-23-pyspark-anomalies.md` |
+| DONE | Implement anomaly-detection job from 2026-09-23 plan | Codex | `main` | `.agent/plans/archive/2026-09-23-pyspark-anomalies.md` |
 | TODO | Replace DAG placeholders with working operators | Unassigned | - | Spark jobs |
 | DONE | Add Spark logic tests | Codex | `main` | Spark jobs |
 | TODO | Complete report, setup evidence, and presentation | Unassigned | - | Working pipeline |
