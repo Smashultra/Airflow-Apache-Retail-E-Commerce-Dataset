@@ -3,11 +3,15 @@ import argparse
 import logging
 from datetime import date
 
+from pyspark.ml import Pipeline
+from pyspark.ml.clustering import KMeans
+from pyspark.ml.feature import StandardScaler, VectorAssembler
 from pyspark.sql import DataFrame, SparkSession, Window
 from pyspark.sql import functions as F
 from pyspark.sql.types import (
     DoubleType,
     IntegerType,
+    LongType,
     StringType,
     TimestampType,
 )
@@ -18,6 +22,9 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger("ecommerce_rfm")
+DEFAULT_KMEANS_SEED = 42
+# k không có giá trị mặc định: số cụm phải được truyền tường minh (CLI --k),
+# vì đây là quyết định phân tích (elbow/silhouette) chứ không nên "ngầm định".
 
 
 # 1. Parse command-line arguments and validate the run date.
@@ -44,7 +51,20 @@ def parse_args(argv=None):
         help="Analysis cutoff date in YYYY-MM-DD format.",
     )
 
+    parser.add_argument(
+        "--k",
+        required=True,
+        type=int,
+        help=(
+            "Number of K-means clusters. No default on purpose: choose it "
+            "via a one-off elbow/silhouette analysis, then pass it explicitly."
+        ),
+    )
+
     args = parser.parse_args(argv)
+
+    if args.k < 2:
+        parser.error("--k must be at least 2.")
 
     try:
         parsed_date = date.fromisoformat(args.run_date)
@@ -243,65 +263,116 @@ def add_rfm_scores(rfm: DataFrame) -> DataFrame:
                    for c in ("R_score", "F_score", "M_score"))),
     )
 
-def _fm_score_expr() -> "F.Column":
-    """Rounded-half-up average of F_score and M_score, as a 1-5 integer."""
-    return F.floor(
-        (F.col("F_score") + F.col("M_score") + F.lit(1)) / F.lit(2)
-    ).cast("int")
-
-def _segment_expr(r_score: "F.Column", fm_score: "F.Column") -> "F.Column":
-    """Business segment rules shared by add_rfm_segment and validate_rfm_output.
-    """
+# Shared feature prep for K-means, reused by both add_rfm_segment (production
+# clustering, fixed k) and scripts/select_kmeans_k.py (offline elbow/silhouette
+# analysis to *choose* k). Keeping this in one place means the k you pick
+# during analysis is guaranteed to be scored on the exact same feature space
+# used in the daily job — log1p skew correction + zero-mean/unit-variance
+# scaling on Recency/Frequency/Monetary.
+def prepare_kmeans_features(rfm: DataFrame) -> DataFrame:
     return (
-        F.when((r_score >= 4) & (fm_score >= 4), "Champions")
-        .when((r_score >= 3) & (fm_score >= 3), "Loyal Customers")
-        .when((r_score >= 4) & (fm_score <= 2), "Potential Loyalist")
-        .when((r_score <= 2) & (fm_score >= 4), "At Risk")
-        .when((r_score <= 2) & (fm_score <= 2), "Hibernating")
-        .otherwise("Need Attention")
+        rfm
+        .withColumn("Recency_log", F.log1p(F.col("Recency").cast("double")))
+        .withColumn("Frequency_log", F.log1p(F.col("Frequency").cast("double")))
+        .withColumn("Monetary_log", F.log1p(F.col("Monetary").cast("double")))
     )
 
 
-# 5b. Map RFM scores to a business-friendly customer segment.
-def add_rfm_segment(result: DataFrame) -> DataFrame:
-    """Assign a segment label from R_score/F_score/M_score (each 1-5).
-
-    Rules (see _segment_expr) are evaluated in priority order (first match
-    wins), covering every possible (R_score, FM_score) pair exactly once:
-      Champions          R>=4 and FM>=4  Mua gần đây, thường xuyên, chi nhiều.
-      Loyal Customers    R>=3 and FM>=3  Khách trung thành, vẫn hoạt động tốt.
-      Potential Loyalist R>=4 and FM<=2  Mới/mua gần đây nhưng tần suất & chi tiêu còn thấp.
-      At Risk            R<=2 and FM>=4  Từng mua nhiều/thường xuyên nhưng đã lâu không quay lại.
-      Hibernating        R<=2 and FM<=2  Ít hoạt động, giá trị thấp, gần như đã rời bỏ.
-      Need Attention     (còn lại)       Ở giữa, chưa rõ xu hướng, cần theo dõi thêm.
-
-    "Champions"/"Loyal Customers" answer the business ask for high-value
-    customers; "At Risk"/"Hibernating" answer the ask for inactive
-    accounts and churn risk.
+def kmeans_feature_pipeline() -> Pipeline:
+    """Assembles the *_log columns into a vector and standard-scales them
+    (no KMeans stage). Fit once and reuse across every k you try.
     """
-    fm_score = _fm_score_expr()
-    return (
-        result
-        .withColumn("FM_score", fm_score)
-        .withColumn("Segment", _segment_expr(F.col("R_score"), F.col("FM_score")))
+    assembler = VectorAssembler(
+        inputCols=["Recency_log", "Frequency_log", "Monetary_log"],
+        outputCol="raw_features",
+    )
+    scaler = StandardScaler(
+        inputCol="raw_features", outputCol="features",
+        withMean=True, withStd=True,
+    )
+    return Pipeline(stages=[assembler, scaler])
+
+
+# 5b. Cluster customers on Recency/Frequency/Monetary with K-means
+def add_rfm_segment(
+    rfm: DataFrame,
+    k: int,
+    seed: int = DEFAULT_KMEANS_SEED,
+) -> DataFrame:
+    """Cluster customers into k groups using K-means.
+
+    k has no default: it's an analysis decision (elbow/silhouette), not
+    an implicit default baked into the pipeline. Features are log1p
+    Recency/Frequency/Monetary, standard-scaled (see prepare_kmeans_features
+    / kmeans_feature_pipeline).
+
+    Adds one column: Cluster (raw K-means id, 0-indexed). Cluster ids are
+    arbitrary and can shift between runs as the input data changes — do
+    not assume "Cluster 0" means the same thing across different dates.
+    Comparing cluster centroids by value and naming them is a manual EDA
+    step done later, not part of this function.
+    """
+    if k < 2:
+        raise ValueError("k must be at least 2 for K-means segmentation.")
+
+    customer_count = rfm.count()
+    if k > customer_count:
+        raise ValueError(
+            f"k={k} exceeds the number of customers ({customer_count}); "
+            "reduce k or provide more data."
+        )
+
+    prepared = prepare_kmeans_features(rfm)
+
+    distinct_vectors = prepared.select(
+        "Recency_log", "Frequency_log", "Monetary_log"
+    ).distinct().count()
+    if distinct_vectors < k:
+        raise ValueError(
+            f"Only {distinct_vectors} distinct feature vectors are available "
+            f"for k={k} clusters; reduce k or provide more varied data."
+        )
+
+    kmeans = KMeans(featuresCol="features", predictionCol="Cluster", k=k, seed=seed)
+    pipeline = Pipeline(stages=[*kmeans_feature_pipeline().getStages(), kmeans])
+
+    model = pipeline.fit(prepared)
+    clustered = model.transform(prepared)
+
+    occupied = clustered.select("Cluster").distinct().count()
+    if occupied < k:
+        raise ValueError(
+            f"K-means produced {occupied} occupied clusters; expected {k}."
+        )
+
+    return clustered.drop(
+        "Recency_log", "Frequency_log", "Monetary_log", "raw_features", "features"
     )
 
 
 # Check results before writing to output folder
-def validate_rfm_output(result: DataFrame, run_date: str) -> None:
+def validate_rfm_output(result: DataFrame, run_date: str, k: int) -> None:
     """Reject invalid output before replacing a daily partition."""
+    if k < 2:
+        raise ValueError("k must be at least 2 for K-means segmentation.")
     if date.fromisoformat(run_date).isoformat() != run_date:
         raise ValueError("run_date must use YYYY-MM-DD.")
     required = {
         "CustomerID", "run_date", "LastPurchaseDate", "Recency",
         "Frequency", "Monetary", "R_score", "F_score", "M_score", "RFM_score",
-        "FM_score", "Segment",
+        "Cluster",
     }
     missing = required - set(result.columns)
     if missing:
         raise ValueError(f"RFM output is missing columns: {sorted(missing)}")
     if result.isEmpty():
         raise ValueError("RFM output is empty.")
+
+    cluster_dtype = result.schema["Cluster"].dataType
+    if not isinstance(cluster_dtype, (IntegerType, LongType)):
+        raise ValueError(
+            f"Cluster must have an integer type; got {cluster_dtype.simpleString()}."
+        )
 
     cutoff = F.lit(run_date).cast("date")
     invalid = (
@@ -327,35 +398,26 @@ def validate_rfm_output(result: DataFrame, run_date: str) -> None:
                               for c in ("R_score", "F_score", "M_score")))
     invalid = invalid | F.col("RFM_score").isNull() | (F.col("RFM_score") != expected_code)
 
-    expected_fm = _fm_score_expr()
-    invalid = (
-        invalid
-        | F.col("FM_score").isNull()
-        | (~F.col("FM_score").isin(1, 2, 3, 4, 5))
-        | (F.col("FM_score") != expected_fm)
-    )
-    valid_segments = (
-        "Champions", "Loyal Customers", "Potential Loyalist",
-        "At Risk", "Hibernating", "Need Attention",
-    )
-    expected_segment = _segment_expr(F.col("R_score"), F.col("FM_score"))
-    invalid = (
-        invalid
-        | F.col("Segment").isNull()
-        | (~F.col("Segment").isin(*valid_segments))
-        | (F.col("Segment") != expected_segment)
-    )
-
     if not result.filter(invalid).isEmpty():
         raise ValueError("RFM output contains invalid metrics, scores, or run_date.")
+
+    invalid_cluster = (
+        F.col("Cluster").isNull() | (F.col("Cluster") < 0) | (F.col("Cluster") >= k)
+    )
+    if not result.filter(invalid_cluster).isEmpty():
+        raise ValueError(
+            f"RFM output contains invalid Cluster values (must be an integer in [0, {k}))."
+        )
+
     if not result.groupBy("CustomerID").count().filter(F.col("count") > 1).isEmpty():
         raise ValueError("RFM output contains duplicate customers.")
 
-
 # 6. Write results for the current cutoff date.
-def write_rfm(result: DataFrame, output_root: str, run_date: str) -> str:
+def write_rfm(
+    result: DataFrame, output_root: str, run_date: str, k: int
+) -> str:
     """Overwrite only the partition for the current cutoff date."""
-    validate_rfm_output(result, run_date)
+    validate_rfm_output(result, run_date, k=k)
     output_path = f"{output_root.rstrip('/')}/run_date={run_date}"
     (
         result.drop("run_date")
@@ -380,14 +442,14 @@ def main():
             .getOrCreate()
         )
 
-        logger.info("Starting RFM job: input=%s, run_date=%s",
-                    args.input, args.run_date)
+        logger.info("Starting RFM job: input=%s, run_date=%s, k=%s",
+                    args.input, args.run_date, args.k)
         transactions = spark.read.parquet(args.input)
         validate_curated_contract(transactions)
         history = select_history(transactions, args.run_date)
 
         rfm = compute_rfm(history, args.run_date)
-        result = add_rfm_segment(add_rfm_scores(rfm)).cache()
+        result = add_rfm_segment(add_rfm_scores(rfm), k=args.k).cache()
         customer_count = result.count()
 
         if customer_count < 5:
@@ -397,7 +459,7 @@ def main():
                 customer_count,
             )
 
-        output_path = write_rfm(result, args.output, args.run_date)
+        output_path = write_rfm(result, args.output, args.run_date, k=args.k)
         logger.info("RFM job completed: customers=%s, output=%s",
                     customer_count, output_path)
 
@@ -416,115 +478,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-
-# # Check results before writing to output folder
-# def validate_rfm_output(result: DataFrame, run_date: str) -> None:
-#     """Reject invalid output before replacing a daily partition."""
-#     if date.fromisoformat(run_date).isoformat() != run_date:
-#         raise ValueError("run_date must use YYYY-MM-DD.")
-#     required = {
-#         "CustomerID", "run_date", "LastPurchaseDate", "Recency",
-#         "Frequency", "Monetary", "R_score", "F_score", "M_score", "RFM_score",
-#     }
-#     missing = required - set(result.columns)
-#     if missing:
-#         raise ValueError(f"RFM output is missing columns: {sorted(missing)}")
-#     if result.isEmpty():
-#         raise ValueError("RFM output is empty.")
-
-#     cutoff = F.lit(run_date).cast("date")
-#     invalid = (
-#         F.col("CustomerID").isNull()
-#         | (F.trim(F.col("CustomerID")) == "")
-#         | F.col("run_date").isNull()
-#         | (F.col("run_date") != cutoff)
-#         | F.col("LastPurchaseDate").isNull()
-#         | (F.col("LastPurchaseDate") >= cutoff)
-#         | F.col("Recency").isNull()
-#         | (F.col("Recency") < 1)
-#         | (F.col("Recency") != F.datediff(cutoff, F.to_date("LastPurchaseDate")))
-#         | F.col("Frequency").isNull()
-#         | (F.col("Frequency") < 1)
-#         | F.col("Monetary").isNull()
-#         | (F.col("Monetary") < 0)
-#         | F.isnan(F.col("Monetary").cast("double"))
-#         | (F.abs(F.col("Monetary").cast("double")) == F.lit(float("inf")))
-#     )
-#     for column in ("R_score", "F_score", "M_score"):
-#         invalid = invalid | F.col(column).isNull() | (~F.col(column).isin(1, 2, 3, 4, 5))
-#     expected_code = F.concat(*(F.col(c).cast("string")
-#                               for c in ("R_score", "F_score", "M_score")))
-#     invalid = invalid | F.col("RFM_score").isNull() | (F.col("RFM_score") != expected_code)
-#     if not result.filter(invalid).isEmpty():
-#         raise ValueError("RFM output contains invalid metrics, scores, or run_date.")
-#     if not result.groupBy("CustomerID").count().filter(F.col("count") > 1).isEmpty():
-#         raise ValueError("RFM output contains duplicate customers.")
-
-
-# # 6. Write results for the current cutoff date.
-# def write_rfm(result: DataFrame, output_root: str, run_date: str) -> str:
-#     """Overwrite only the partition for the current cutoff date."""
-#     validate_rfm_output(result, run_date)
-#     output_path = f"{output_root.rstrip('/')}/run_date={run_date}"
-#     (
-#         result.drop("run_date")
-#         .write.mode("overwrite")
-#         .parquet(output_path)
-#     )
-#     return output_path
-
-
-# # 7. Run the complete RFM job.
-# def main():
-#     args = parse_args()
-#     spark = None
-#     result = None
-
-#     try:
-#         spark = (
-#             SparkSession.builder
-#             .appName("CalculateRFM")
-#             .config("spark.sql.session.timeZone", "UTC")
-#             .config("spark.sql.ansi.enabled", "true")
-#             .getOrCreate()
-#         )
-
-#         logger.info("Starting RFM job: input=%s, run_date=%s",
-#                     args.input, args.run_date)
-#         transactions = spark.read.parquet(args.input)
-#         validate_curated_contract(transactions)
-#         history = select_history(transactions, args.run_date)
-
-#         rfm = compute_rfm(history, args.run_date)
-#         result = add_rfm_scores(rfm).cache()
-#         customer_count = result.count()
-
-#         if customer_count < 5:
-#             logger.warning(
-#                 "Only %s customers found: relative scores use a small population "
-#                 "and may not cover all five levels.",
-#                 customer_count,
-#             )
-
-#         output_path = write_rfm(result, args.output, args.run_date)
-#         logger.info("RFM job completed: customers=%s, output=%s",
-#                     customer_count, output_path)
-
-#     except Exception:
-#         logger.exception("RFM job failed.")
-#         raise
-
-#     finally:
-#         try:
-#             if result is not None:
-#                 result.unpersist()
-#         finally:
-#             if spark is not None:
-#                 spark.stop()
-
-
-# if __name__ == "__main__":
-#     main()
