@@ -12,13 +12,16 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
     AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
     AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_API_JWT_SECRET:-local-only-change-me}
-    AIRFLOW_CONN_SPARK_DEFAULT: '{"conn_type":"spark","host":"local[*]"}'
+    AIRFLOW_CONN_SPARK_DEFAULT: '{"conn_type":"spark","host":"local[2]"}'
+    AIRFLOW_CONN_RETAIL_LANDING: '{"conn_type":"fs","extra":{"path":"/opt/airflow/data/raw/landing"}}'
+    PYTHONPATH: /opt/airflow:/opt/airflow/scripts:/opt/airflow/dags
   volumes:
     - ./dags:/opt/airflow/dags
     - ./scripts:/opt/airflow/scripts
     - ./tests:/opt/airflow/tests:ro
     - ./data:/opt/airflow/data
     - ./logs:/opt/airflow/logs
+    - ./pyproject.toml:/opt/airflow/pyproject.toml:ro
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     postgres:

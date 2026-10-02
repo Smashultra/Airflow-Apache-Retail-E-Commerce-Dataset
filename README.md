@@ -20,7 +20,7 @@ compute_rfm_metrics   detect_anomalies
         notify_completion
 ```
 
-The intended data flow is:
+The standalone legacy cleaning flow is:
 
 ```text
 CSV in data/raw/
@@ -28,7 +28,7 @@ CSV in data/raw/
   -> deduplicated anomaly input in data/audit/anomalies.parquet/
 ```
 
-The cleaning job is implemented and tested. The DAG structure and task dependencies exist, but its tasks are still placeholders.
+The official DAG uses a readiness sensor, three Spark submissions and a completion task. It reads immutable daily landing files, writes versioned Parquet snapshots and publishes a small JSON manifest after both analytics branches succeed. See [SETUP](docs/SETUP.md) for preparation, pool configuration and manual trigger parameters; see [the detailed design](docs/DAG_DESIGN_VI.md) for book references and architectural reasons. The legacy commands below remain usable independently.
 
 RFM input excludes `StockCode` values `POST`, `M`, `DOT`, `BANK CHARGES`, `C2`, and `PADS`, plus rows whose `Description` is `PACKING CHARGE` or `NEXT DAY CARRIAGE` (case-insensitive, ignoring surrounding spaces). The anomaly input retains these rows.
 
@@ -146,7 +146,7 @@ The downloaded file is intentionally ignored by Git. Inside the Airflow containe
 
 ## Quick start
 
-Requirements: Docker Desktop with at least 4 GB of memory available, local port `8080` free, and Kaggle API credentials configured at `$HOME/.kaggle/kaggle.json`.
+Requirements: Docker Desktop with about 8 GB of memory available, local port `8080` free, and Kaggle API credentials configured at `$HOME/.kaggle/kaggle.json`.
 
 No local `pip install` is required. Building the image is the dependency-installation step because the Dockerfile runs `pip install -r requirements.txt` inside the image.
 
@@ -168,7 +168,7 @@ Open <http://localhost:8080> and sign in with the credentials configured in `.en
 docker compose ps
 docker compose exec airflow-scheduler airflow dags list
 docker compose exec airflow-scheduler spark-submit --version
-docker compose exec airflow-scheduler pytest /opt/airflow/tests
+docker compose exec airflow-scheduler python -m pytest -q tests/test_retail_contracts.py tests/test_retail_dag.py tests/test_retail_pipeline.py tests/test_pyspark_clean.py tests/test_pyspark_rfm.py tests/test_pyspark_anomalies.py
 docker compose down
 ```
 
@@ -187,10 +187,10 @@ Git commits and pull requests are the audit trail for individual changes. `.agen
 ## Current status
 
 - Project and collaboration structure: complete on `initial-setup`.
-- Docker image and local PySpark jobs: built and exercised; full Airflow/PostgreSQL stack smoke test remains open.
-- DAG topology: complete placeholder skeleton.
+- Docker image, Airflow services and PostgreSQL: running; see [verification evidence](docs/IMPLEMENTATION_VI.md) for the scheduler run.
+- DAG: six real tasks, historical intervals, explicit manual dates, readiness checks, retries and a deadline callback.
 - Dataset selection and download location: complete.
-- Cleaning, RFM, and standalone anomaly scripts: implemented; DAG wiring, notification, and raw-data validation: pending.
+- Cleaning, RFM, churn-proxy labels, order-total audit and publication manifests: implemented. See the verification report for runtime evidence.
 - Report, screenshots, and presentation: pending.
 
 See [`.agent/TODO.md`](.agent/TODO.md) for the live work queue.

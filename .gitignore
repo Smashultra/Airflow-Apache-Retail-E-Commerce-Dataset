@@ -21,6 +21,9 @@ data/audit/anomalies/*
 !data/audit/anomalies/.gitkeep
 data/audit/anomalies.parquet/
 data/audit/anomaly_results*/
+data/manifests/
+data/verification/
+.ruff_cache/
 
 .idea/
 .vscode/

@@ -132,4 +132,11 @@ def main(argv: Sequence[str] | None = None) -> None:
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+
+    if "--pipeline-context" in sys.argv:
+        from retail_pipeline import pipeline_main
+
+        pipeline_main("etl")
+    else:
+        main()

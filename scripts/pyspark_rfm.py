@@ -477,4 +477,11 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+
+    if "--pipeline-context" in sys.argv:
+        from retail_pipeline import pipeline_main
+
+        pipeline_main("rfm")
+    else:
+        main()

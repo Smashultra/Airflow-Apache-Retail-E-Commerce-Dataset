@@ -1,0 +1,792 @@
+{
+  "audit": {
+    "flagged_orders": {
+      "type": "struct",
+      "fields": [
+        {
+          "name": "invoice_key",
+          "type": "string",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "line_count",
+          "type": "long",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "invalid_lines",
+          "type": "long",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "customer_ids",
+          "type": "long",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "countries",
+          "type": "long",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "invoice_days",
+          "type": "long",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "eligible",
+          "type": "boolean",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "order_total",
+          "type": "decimal(33,2)",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "reason",
+          "type": "string",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "reference_n",
+          "type": "integer",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "reference_mean",
+          "type": "double",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "reference_stddev",
+          "type": "double",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "upper_bound",
+          "type": "double",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "currency",
+          "type": "string",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "multiplier",
+          "type": "double",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "run_date",
+          "type": "date",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "reference_mode",
+          "type": "string",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "nullable": true,
+          "metadata": {}
+        }
+      ]
+    },
+    "order_assessments": {
+      "type": "struct",
+      "fields": [
+        {
+          "name": "invoice_key",
+          "type": "string",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "line_count",
+          "type": "long",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "invalid_lines",
+          "type": "long",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "customer_ids",
+          "type": "long",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "countries",
+          "type": "long",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "invoice_days",
+          "type": "long",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "eligible",
+          "type": "boolean",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "order_total",
+          "type": "decimal(33,2)",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "reason",
+          "type": "string",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "reference_n",
+          "type": "integer",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "reference_mean",
+          "type": "double",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "reference_stddev",
+          "type": "double",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "upper_bound",
+          "type": "double",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "currency",
+          "type": "string",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "multiplier",
+          "type": "double",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "run_date",
+          "type": "date",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "reference_mode",
+          "type": "string",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "status",
+          "type": "string",
+          "nullable": true,
+          "metadata": {}
+        }
+      ]
+    },
+    "row_assessments": {
+      "type": "struct",
+      "fields": [
+        {
+          "name": "InvoiceNo",
+          "type": "string",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "StockCode",
+          "type": "string",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "Description",
+          "type": "string",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "Quantity",
+          "type": "integer",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "InvoiceDate",
+          "type": "timestamp",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "UnitPrice",
+          "type": "double",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "CustomerID",
+          "type": "string",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "Country",
+          "type": "string",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "run_date",
+          "type": "date",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "reference_mode",
+          "type": "string",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "iqr_multiplier",
+          "type": "double",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "min_samples",
+          "type": "integer",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "line_value",
+          "type": "double",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "data_quality_flags",
+          "type": {
+            "type": "array",
+            "elementType": "string",
+            "containsNull": true
+          },
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "context_flags",
+          "type": {
+            "type": "array",
+            "elementType": "string",
+            "containsNull": true
+          },
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "check_results",
+          "type": {
+            "type": "array",
+            "elementType": {
+              "type": "struct",
+              "fields": [
+                {
+                  "name": "rule",
+                  "type": "string",
+                  "nullable": true,
+                  "metadata": {}
+                },
+                {
+                  "name": "status",
+                  "type": "string",
+                  "nullable": true,
+                  "metadata": {}
+                },
+                {
+                  "name": "reason",
+                  "type": "string",
+                  "nullable": true,
+                  "metadata": {}
+                },
+                {
+                  "name": "observed_value",
+                  "type": "double",
+                  "nullable": true,
+                  "metadata": {}
+                },
+                {
+                  "name": "reference_count",
+                  "type": "long",
+                  "nullable": true,
+                  "metadata": {}
+                },
+                {
+                  "name": "q1",
+                  "type": "double",
+                  "nullable": true,
+                  "metadata": {}
+                },
+                {
+                  "name": "q3",
+                  "type": "double",
+                  "nullable": true,
+                  "metadata": {}
+                },
+                {
+                  "name": "upper_bound",
+                  "type": "double",
+                  "nullable": true,
+                  "metadata": {}
+                }
+              ]
+            },
+            "containsNull": true
+          },
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "anomaly_flags",
+          "type": {
+            "type": "array",
+            "elementType": "string",
+            "containsNull": true
+          },
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "assessment_status",
+          "type": "string",
+          "nullable": true,
+          "metadata": {}
+        }
+      ]
+    }
+  },
+  "etl": {
+    "audit_input": {
+      "type": "struct",
+      "fields": [
+        {
+          "name": "InvoiceNo",
+          "type": "string",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "StockCode",
+          "type": "string",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "Description",
+          "type": "string",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "Quantity",
+          "type": "integer",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "InvoiceDate",
+          "type": "timestamp",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "UnitPrice",
+          "type": "double",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "CustomerID",
+          "type": "string",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "Country",
+          "type": "string",
+          "nullable": true,
+          "metadata": {}
+        }
+      ]
+    },
+    "parse_errors": {
+      "type": "struct",
+      "fields": [
+        {
+          "name": "raw_InvoiceNo",
+          "type": "string",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "raw_StockCode",
+          "type": "string",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "raw_Description",
+          "type": "string",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "raw_Quantity",
+          "type": "string",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "raw_InvoiceDate",
+          "type": "string",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "raw_UnitPrice",
+          "type": "string",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "raw_CustomerID",
+          "type": "string",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "raw_Country",
+          "type": "string",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "InvoiceNo",
+          "type": "string",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "StockCode",
+          "type": "string",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "Description",
+          "type": "string",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "Quantity",
+          "type": "integer",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "InvoiceDate",
+          "type": "timestamp",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "UnitPrice",
+          "type": "double",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "CustomerID",
+          "type": "string",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "Country",
+          "type": "string",
+          "nullable": true,
+          "metadata": {}
+        }
+      ]
+    },
+    "transactions": {
+      "type": "struct",
+      "fields": [
+        {
+          "name": "InvoiceNo",
+          "type": "string",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "StockCode",
+          "type": "string",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "Description",
+          "type": "string",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "Quantity",
+          "type": "integer",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "InvoiceDate",
+          "type": "timestamp",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "UnitPrice",
+          "type": "double",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "CustomerID",
+          "type": "string",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "Country",
+          "type": "string",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "year",
+          "type": "integer",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "month",
+          "type": "integer",
+          "nullable": true,
+          "metadata": {}
+        }
+      ]
+    }
+  },
+  "rfm": {
+    "cluster_profile": {
+      "type": "struct",
+      "fields": [
+        {
+          "name": "Cluster",
+          "type": "integer",
+          "nullable": true,
+          "metadata": {
+            "ml_attr": {
+              "num_vals": 2,
+              "type": "nominal"
+            }
+          }
+        },
+        {
+          "name": "customers",
+          "type": "long",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "mean_Recency",
+          "type": "double",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "mean_Frequency",
+          "type": "double",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "mean_Monetary",
+          "type": "decimal(37,6)",
+          "nullable": true,
+          "metadata": {}
+        }
+      ]
+    },
+    "customers": {
+      "type": "struct",
+      "fields": [
+        {
+          "name": "CustomerID",
+          "type": "string",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "run_date",
+          "type": "date",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "LastPurchaseDate",
+          "type": "timestamp",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "Recency",
+          "type": "integer",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "Frequency",
+          "type": "long",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "Monetary",
+          "type": "decimal(33,2)",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "R_score",
+          "type": "integer",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "F_score",
+          "type": "integer",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "M_score",
+          "type": "integer",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "RFM_score",
+          "type": "string",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "Cluster",
+          "type": "integer",
+          "nullable": true,
+          "metadata": {
+            "ml_attr": {
+              "num_vals": 2,
+              "type": "nominal"
+            }
+          }
+        },
+        {
+          "name": "is_high_value",
+          "type": "boolean",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "is_inactive",
+          "type": "boolean",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "observed_history_days",
+          "type": "integer",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "churn_threshold_days",
+          "type": "integer",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "segment_rule_version",
+          "type": "string",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "churn_assessment_status",
+          "type": "string",
+          "nullable": true,
+          "metadata": {}
+        },
+        {
+          "name": "segment",
+          "type": "string",
+          "nullable": true,
+          "metadata": {}
+        }
+      ]
+    }
+  }
+}

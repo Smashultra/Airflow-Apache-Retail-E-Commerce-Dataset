@@ -1,0 +1,110 @@
+{
+  "context": {
+    "business_date": "2011-12-09",
+    "churn_days": 90,
+    "code_version": "09fec8a1b9b9cdc19e0113e19560102ac7a9be7125d80b9b7d0c30ffc34a79a9",
+    "dag_id": "ecommerce_etl_dag",
+    "first_date": "2010-12-01",
+    "rfm_k": 2,
+    "rule_version": "retail-v2",
+    "run_date": "2011-12-10",
+    "run_id": "official_smoke_20260929",
+    "run_key": "dd98a9cee141be7fa1da53074440e416640730919bad3540f22c9ee81019ee51",
+    "schema_version": 1,
+    "source_hash": "516d86486742010fa15bc65e7259b044c540fc80b7d4269371e22aad5fcabad1",
+    "source_version": "online-retail-v1"
+  },
+  "metrics": {
+    "audit": {
+      "assessed_rows": 536641,
+      "order_status": {
+        "flagged": 133,
+        "not_assessable": 5993,
+        "not_flagged": 19774
+      },
+      "orders": 25900,
+      "row_status": {
+        "flagged": 40051,
+        "not_flagged": 496590
+      },
+      "rows_without_invoice": 0
+    },
+    "etl": {
+      "dedup_rows": 536641,
+      "duplicates_removed": 5268,
+      "input_rows": 541909,
+      "parse_error_rows": 0,
+      "rfm_excluded_unique": 145584,
+      "rfm_rows": 391057
+    },
+    "rfm": {
+      "churn_status": {
+        "inactivity_proxy": 1463,
+        "not_flagged": 2871
+      },
+      "clusters": {
+        "0": 1663,
+        "1": 2671
+      },
+      "customers": 4334,
+      "high_value": 1734,
+      "inactive": 1463,
+      "segments": {
+        "high_value_active": 891,
+        "high_value_inactive": 253,
+        "inactive": 1210,
+        "recent_low_frequency": 507,
+        "regular": 1473
+      }
+    }
+  },
+  "stage_duration_seconds": {
+    "audit": 163.917,
+    "etl": 181.01,
+    "rfm": 125.751
+  },
+  "task_states_observed_via_airflow_cli": {
+    "start_pipeline": "success",
+    "validate_raw_data": "success",
+    "submit_pyspark_etl": "success",
+    "compute_rfm_metrics": "success",
+    "detect_anomalies": "success",
+    "notify_completion": "success"
+  },
+  "versions": {
+    "airflow": "3.3.1",
+    "pyspark": "4.2.0",
+    "spark_provider": "6.3.2",
+    "standard_provider": "1.17.0",
+    "fab_provider": "3.8.0"
+  },
+  "pytest": {
+    "passed": 87,
+    "failed": 0,
+    "warnings": 1,
+    "duration_seconds": 281.51
+  },
+  "readback": {
+    "run_id": "official_smoke_20260929",
+    "counts": {
+      "audit": {
+        "flagged_orders": 133,
+        "order_assessments": 25900,
+        "row_assessments": 536641
+      },
+      "etl": {
+        "audit_input": 536641,
+        "parse_errors": 0,
+        "transactions": 391057
+      },
+      "rfm": {
+        "cluster_profile": 2,
+        "customers": 4334
+      }
+    },
+    "source_sha256": "d07aec9960083af2339975a3f9d3b26313b342dcd9f86cce0b919b1cde639a44",
+    "source_unchanged": true,
+    "monthly_partitions": 13,
+    "readback": "passed"
+  }
+}

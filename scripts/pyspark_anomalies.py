@@ -396,4 +396,11 @@ def main(argv: Sequence[str] | None = None) -> None:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-    main()
+    import sys
+
+    if "--pipeline-context" in sys.argv:
+        from retail_pipeline import pipeline_main
+
+        pipeline_main("audit")
+    else:
+        main()
