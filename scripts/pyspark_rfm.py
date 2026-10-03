@@ -161,7 +161,7 @@ def select_history(
 ) -> DataFrame:
     cutoff = F.lit(run_date).cast("date")
     cutoff_date = date.fromisoformat(run_date)
-
+    
     if {"year", "month"}.issubset(df.columns):
         df = df.filter(
             (F.col("year") < F.lit(cutoff_date.year))
@@ -293,7 +293,7 @@ def kmeans_feature_pipeline() -> Pipeline:
     return Pipeline(stages=[assembler, scaler])
 
 
-# 5b. Cluster customers on Recency/Frequency/Monetary with K-means
+# 5b. Cluster customers on Recency/Frequency/Monetary with K-means 
 def add_rfm_segment(
     rfm: DataFrame,
     k: int,
@@ -323,7 +323,7 @@ def add_rfm_segment(
         )
 
     prepared = prepare_kmeans_features(rfm)
-
+    
     distinct_vectors = prepared.select(
         "Recency_log", "Frequency_log", "Monetary_log"
     ).distinct().count()
@@ -332,13 +332,13 @@ def add_rfm_segment(
             f"Only {distinct_vectors} distinct feature vectors are available "
             f"for k={k} clusters; reduce k or provide more varied data."
         )
-
+        
     kmeans = KMeans(featuresCol="features", predictionCol="Cluster", k=k, seed=seed)
     pipeline = Pipeline(stages=[*kmeans_feature_pipeline().getStages(), kmeans])
 
     model = pipeline.fit(prepared)
     clustered = model.transform(prepared)
-
+    
     occupied = clustered.select("Cluster").distinct().count()
     if occupied < k:
         raise ValueError(
@@ -477,11 +477,4 @@ def main():
 
 
 if __name__ == "__main__":
-    import sys
-
-    if "--pipeline-context" in sys.argv:
-        from retail_pipeline import pipeline_main
-
-        pipeline_main("rfm")
-    else:
-        main()
+    main()
