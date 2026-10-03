@@ -2,6 +2,8 @@
 
 | Status | Task | Owner | Branch | Dependency |
 |---|---|---|---|---|
+| DONE | Match Online Retail guide image usage to anomalies/RFM guides and delete notebooks/assets at user request | Codex | `main` | No embeds or orphan captions; 12 sections/links/syntax verified; notebook hashes unchanged |
+| DONE | Convert Online Retail EDA DOCX to Markdown guide, fill missing explanations and remove source DOCX after verification | Codex | `main` | 12 sections, 9 images and CSV-backed checks passed; DOCX deleted at user request |
 | DONE | Publish complete committed local snapshot to main at user request | Codex | `initial-setup` -> `main` | Explicit destination correction 2026-10-03 |
 | DONE | Publish all modified/untracked nonignored local files including Parquet/fixtures at user request | Codex | `initial-setup` | Explicit user authorization 2026-10-03 |
 | DONE | Organize RFM EDA/comparison notebooks and write Vietnamese guide | Codex | `initial-setup` | Existing notebooks and local Parquet |

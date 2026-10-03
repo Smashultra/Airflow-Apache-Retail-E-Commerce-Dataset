@@ -1,5 +1,20 @@
 # Current Handoff
 
+## Online Retail guide without embedded images - 2026-10-03
+
+- Owner: Codex; branch: `main`. Inspected saved outputs: EDA_Anomalies.ipynb has two image outputs; EDA_RFM_Parquet.ipynb has seven. Neither corresponding guide embeds or links image files. Following the user's request, removed all nine image embeds from EDA_Online_Retail_Guide.md and deleted `notebooks/assets` after verifying its resolved workspace path and contents.
+- Replaced figure captions/numbers and assets instructions with explanations pointing to the relevant notebook sections. Preserved all 12 sections, numeric tables, cleaning additions and histogram/boxplot interpretation. This supersedes the previous conversion entry's image-delivery requirement.
+- Verification: PowerShell here-string `python -` assertions passed: no image/asset references or orphan numbered captions, 12 numbered sections, resolving local links, Python block syntax, UTF-8/whitespace checks and assets absent. SHA-256 matches all three notebooks and both reference guides against `logs/eda_guide_no_images_hashes.json`. `git diff --check` passed with line-ending notices only. No runtime/data changes or notebook reruns; no commit/push.
+- Next action: read the guide alongside the notebook for plots; no remaining work for this request. The older image-specific verification helper in logs records the prior delivery and is no longer applicable.
+
+## Online Retail EDA Markdown guide - 2026-10-03
+
+- Owner: Codex; branch: `main`. Converted the user-provided `notebooks/Tong_hop_EDA_Online_Retail.docx` into `notebooks/EDA_Online_Retail_Guide.md`, preserving its 12 sections, tables, code and eight figures under `notebooks/assets/EDA_Online_Retail_Guide/`. Deleted that DOCX only after verification, as explicitly requested. No commit/push.
+- Added the omitted histogram from notebook section 4 (guide section 6), log-axis/boxplot/quantile explanations and a section mapping. Expanded guide section 4 with CSV-verified zero-price groups (2,515 = 1,336 + 772 + 367 + 7 + 33), seven customer-linked rows across four entirely zero-price invoices, negative-price context and filter reconciliation. Clarified revenue/cohort denominators, incomplete cleaning and interpretation limits; verified formerly reference-only special codes/invoices against local CSV.
+- Verification: `python logs/verify_eda_guide.py` passed before and after DOCX deletion: 12 sections, nine valid PNGs, resolving local links, original eight image bytes preserved, histogram bytes matching saved notebook, two executable Python blocks, cleaning counts, quantiles and customer/country metrics. SHA-256 confirms notebook and raw CSV unchanged. `git diff --check` passed (line-ending notices only). Verification helper and source hashes are local ignored files in logs; histogram visually inspected.
+- Limits: notebook was not rerun or edited; it still reads `data.csv` relative to the kernel directory. Guide explains the actual repository path and distinguishes added CSV analysis from existing notebook output. Markdown images require the accompanying assets directory. Unrelated active Word-handbook plan untouched.
+- Next action: open the Markdown preview beside `EDA_Online_Retail.ipynb`; no remaining work for this conversion request.
+
 ## Complete local snapshot published to main - 2026-10-03
 
 - Owner: Codex; workspace branch: `initial-setup`; destination: `main`, explicitly corrected by user. `git fetch origin` succeeded; `git merge-base --is-ancestor origin/main HEAD` passed before push.
