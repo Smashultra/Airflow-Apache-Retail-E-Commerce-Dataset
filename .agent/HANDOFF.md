@@ -1,5 +1,11 @@
 # Current Handoff
 
+## Complete local snapshot published to main - 2026-10-03
+
+- Owner: Codex; workspace branch: `initial-setup`; destination: `main`, explicitly corrected by user. `git fetch origin` succeeded; `git merge-base --is-ancestor origin/main HEAD` passed before push.
+- Verification: `git push origin HEAD:main` succeeded as fast-forward (4fe270f -> 7edc7ef), publishing the complete committed local snapshot and existing branch history. No force push, branch checkout, local file deletion or dataset changes. Prior source/notebook checks and limitations remain as recorded below.
+- Next action: publish this final bookkeeping commit to main and verify HEAD matches origin/main with a clean workspace. No remaining implementation work in this publishing request.
+
 ## Local snapshot pushed successfully - 2026-10-03
 
 - Owner: Codex; branch: `initial-setup`. User-authorized complete nonignored local snapshot committed as ba2bf05 (40 changed files), including notebook outputs, renamed guide, source/tests, all comparison Parquet/CRC/success markers and demo fixtures. Existing nine unpublished commits were also included in the branch push. Ignored files stayed local; nothing deleted.

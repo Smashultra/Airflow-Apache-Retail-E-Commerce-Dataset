@@ -2,6 +2,7 @@
 
 | Status | Task | Owner | Branch | Dependency |
 |---|---|---|---|---|
+| DONE | Publish complete committed local snapshot to main at user request | Codex | `initial-setup` -> `main` | Explicit destination correction 2026-10-03 |
 | DONE | Publish all modified/untracked nonignored local files including Parquet/fixtures at user request | Codex | `initial-setup` | Explicit user authorization 2026-10-03 |
 | DONE | Organize RFM EDA/comparison notebooks and write Vietnamese guide | Codex | `initial-setup` | Existing notebooks and local Parquet |
 | IN PROGRESS | Create comprehensive Vietnamese Word architecture and end-to-end project handbook, traced to assignment and updated rubric | Codex | `main` | airflow_subject.docx, book-backed design, actual code/evidence |
