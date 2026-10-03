@@ -2,6 +2,25 @@
 
 Use `YYYY-MM-DD HH:mm UTC+07:00` in every decision heading.
 
+## 2026-09-29 13:23 UTC+07:00 - Official historical DAG execution contracts
+
+- Status: Implemented under the user's explicit request to code the official DAG.
+- Decision: Keep exactly six business tasks: Empty start, FileSensor-derived validation, three SparkSubmit tasks, and all-success publication. Use SDK timetable/deadline declarations compatible with Airflow 3.3.1. Manual runs require business_date; scheduled/backfill runs use a daily UTC interval bounded to dataset coverage.
+- Decision: Bootstrap immutable UTF-8 daily files from the CP1252 source, checking CSV round-trip and SHA-256. Use a source-version name plus content hashes, including explicit zero-row dates. Original data remains unchanged.
+- Decision: Pass one frozen `--pipeline-context` path to Spark rather than independent CLI parameters. Version outputs per attempt and publish only manifests whose code/source/context and ETL hashes agree. Preserve legacy CLI behavior and outputs.
+- Decision: Add month-partitioned clean transactions, parse quarantine, customer inactivity labels and retrospective eligible-invoice totals above mean + 3 sample standard deviations (minimum 30 orders, GBP). Missing customer IDs remain eligible for order checks. Global RFM Window scoring retains its documented customer-scale limitation.
+- Decision: Default to local[2], 3 GB driver and one retail_spark pool slot. The two analytics branches are logically independent but run sequentially under this resource profile. Other user workloads share Docker memory; do not modify them.
+- Consequences: Full-history snapshots trade storage/work for independent historical reruns. Code changes require new runs. Local publication uses same-filesystem atomic JSON replacement plus an exclusive lock; crashed locks require inspection. Deadline callbacks log locally; no external messages or watchdog are configured.
+- Revisit when: Distributed/incremental scale, measured two-JVM capacity, validated churn/anomaly outcomes, or externally delivered alerts become explicit requirements.
+
+## 2026-09-28 17:55 UTC+07:00 - Updated assignment rubric is authoritative
+
+- Status: Accepted from the user's explicit clarification.
+- Context: The original DOCX batch assignment contained a conflicting Kafka/Streaming rubric and illustration. The user supplied a replacement rubric directly.
+- Decision: Use DOCX sections 1–5 for functional requirements and the updated 25/25/25/15/10 rubric for grading. Kafka/Flume, streaming intent/recommendation and Cassandra are not required by this task.
+- Consequences: The design now explicitly addresses Sensor usage, deadline/SLA monitoring compatible with Airflow 3.3.1, PEP8 and evidence for all five categories. These implementation choices remain proposals until implemented and tested; scope no longer awaits clarification.
+- Revisit when: The user or instructor supplies revised requirements.
+
 ## 2026-09-09 11:11 UTC+07:00 - Shared project-state convention
 
 - Status: Accepted
@@ -64,3 +83,15 @@ Use `YYYY-MM-DD HH:mm UTC+07:00` in every decision heading.
 - Reason: These are known non-product lines in the selected dataset. Exact matches protect products whose descriptions incidentally contain words such as "carriage".
 - Consequences: The RFM Parquet output must be regenerated; downstream RFM totals exclude these line items.
 - Revisit when: New input data contains other documented service codes or descriptions.
+
+
+## 2026-09-23 15:30 UTC+07:00 - PySpark anomaly assessment scope
+
+- Status: Accepted and implemented.
+- Context: The EDA retains 135,037 rows without CustomerID, most of which remain eligible for product, transaction and time checks. Statistical flags are review candidates, and keyword interpretations require same-StockCode product-name context.
+- Decision: Implement `scripts/pyspark_anomalies.py` in PySpark. Retain every source row in scope and all eight original columns; keep data-quality flags, business context and anomaly checks distinct. Evaluate retrospectively using rows with `InvoiceDate < run_date`; allow rows with missing dates only in applicable business checks. Do not impute CustomerID or automatically drop/repair/label fraud.
+- Decision: V1 uses six explainable business checks and upper product-level IQR checks for Quantity, UnitPrice and line value. Start with multiplier 3 and minimum 30 eligible rows; require positive IQR; do not fallback to global thresholds. Record each check as flagged, not_flagged or not_applied with reason and evidence. Aggregate status is computed after all checks; an inapplicable check does not imply the transaction is unassessable.
+- Decision: Write results to a date partition under `data/audit/anomaly_results`, overwriting only the requested run-date partition after path-safety and row-preservation checks.
+- Reason: This keeps missing-ID transactions useful for transaction-level analysis while preserving traceability and avoiding unsupported conclusions.
+- Consequences: IQR thresholds are retrospective review aids, not validated fraud thresholds or online detection. Implementation and acceptance evidence are in `.agent/plans/archive/2026-09-23-pyspark-anomalies.md`.
+- Revisit when: There are validated anomaly labels, a need to score new transactions using past-only reference data, or domain-approved alternative handling for sparse/zero-IQR products.

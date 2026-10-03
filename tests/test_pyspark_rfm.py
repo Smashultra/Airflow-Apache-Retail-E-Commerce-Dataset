@@ -21,6 +21,7 @@ from pyspark.sql.types import (  # noqa: E402
 
 from scripts.pyspark_rfm import (  # noqa: E402
     add_rfm_scores,
+    add_rfm_segment,
     compute_rfm,
     parse_args,
     select_history,
@@ -207,6 +208,87 @@ def test_only_constant_metric_gets_one(spark):
     assert actual["b"] == (5, 1, 5, "515")
 
 
+# add_rfm_segment bây giờ chỉ phân cụm (K-means), chỉ trả về cột Cluster
+# (id thô do KMeans gán) - KHÔNG xếp hạng, KHÔNG gán tên business.
+# Việc so sánh giá trị giữa các cụm và đặt tên nhóm là bước làm tay, sau
+# khi EDA trên dữ liệu cụm thật (không tự động hoá trong hàm này).
+
+def rfm_rows(spark, rows):
+    """rows: list of (CustomerID, Recency, Frequency, Monetary)."""
+    return spark.createDataFrame(
+        rows,
+        "CustomerID string, Recency int, Frequency int, Monetary double",
+    )
+
+
+# k không còn giá trị mặc định: gọi thiếu --k/k phải báo lỗi rõ ràng.
+def test_add_rfm_segment_requires_explicit_k(spark):
+    df = rfm_rows(spark, [(str(i), 10, i + 1, float(i + 1)) for i in range(4)])
+    with pytest.raises(TypeError):
+        add_rfm_segment(df)
+
+
+def test_add_rfm_segment_rejects_k_below_two(spark):
+    df = rfm_rows(spark, [(str(i), 10, i + 1, float(i + 1)) for i in range(4)])
+    with pytest.raises(ValueError, match="at least 2"):
+        add_rfm_segment(df, k=1)
+
+
+def test_add_rfm_segment_rejects_k_larger_than_customer_count(spark):
+    df = rfm_rows(spark, [("a", 10, 1, 10.0), ("b", 5, 2, 20.0)])
+    with pytest.raises(ValueError, match="exceeds the number of customers"):
+        add_rfm_segment(df, k=3)
+
+
+@pytest.mark.parametrize("distinct_vectors", [1, 2])
+def test_add_rfm_segment_rejects_insufficient_distinct_features(spark, distinct_vectors):
+    df = rfm_rows(spark, [
+        (str(i), 10, 1 + i % distinct_vectors, 50.0)
+        for i in range(6)
+    ])
+    with pytest.raises(ValueError, match="distinct feature vectors"):
+        add_rfm_segment(df, k=3)
+
+
+def test_add_rfm_segment_rejects_fewer_occupied_clusters(spark, monkeypatch):
+    from pyspark.ml import Pipeline
+
+    class CollapsedModel:
+        def transform(self, prepared):
+            return prepared.withColumn("Cluster", F.lit(0))
+
+    monkeypatch.setattr(Pipeline, "fit", lambda self, dataset: CollapsedModel())
+    df = rfm_rows(spark, [("a", 1, 20, 5000.0), ("b", 300, 1, 5.0)])
+    with pytest.raises(ValueError, match="1 occupied clusters; expected 2"):
+        add_rfm_segment(df, k=2)
+
+
+# Output chỉ có thêm đúng 1 cột mới: Cluster. Không có ClusterRank, không
+# có Segment - việc xếp hạng/đặt tên để làm tay ở bước EDA riêng.
+# Vẫn kiểm tra tính chất phân cụm cơ bản: 2 khách rất giống nhau (gần,
+# mua nhiều, chi nhiều) phải rơi vào cùng 1 Cluster, và khác hẳn với 2
+# khách rất khác biệt (xa, mua ít, chi ít).
+def test_add_rfm_segment_groups_similar_customers_together(spark):
+    rows = [
+        ("best", 1, 20, 5000.0),
+        ("best2", 2, 22, 4800.0),
+        ("worst", 300, 1, 5.0),
+        ("worst2", 310, 1, 8.0),
+    ]
+    df = rfm_rows(spark, rows)
+    result_df = add_rfm_segment(df, k=2)
+
+    assert set(result_df.columns) - set(df.columns) == {"Cluster"}
+    assert "ClusterRank" not in result_df.columns
+    assert "Segment" not in result_df.columns
+
+    result = {r.CustomerID: r.Cluster for r in result_df.collect()}
+    assert result["best"] == result["best2"]
+    assert result["worst"] == result["worst2"]
+    assert result["best"] != result["worst"]
+    assert set(result.values()) == {0, 1}  # raw KMeans ids for k=2 are 0-indexed
+
+
 # 3. Test history selection and RFM metric computation.
 def sample(spark):
     return spark.createDataFrame([
@@ -215,6 +297,19 @@ def sample(spark):
         ("a", "i2", datetime(2011, 12, 9, tzinfo=timezone.utc), 3, 20.),
         ("a", "future", datetime(2011, 12, 10, tzinfo=timezone.utc), 1, 999.),
     ], "CustomerID string, InvoiceNo string, InvoiceDate timestamp, Quantity int, UnitPrice double")
+
+
+# sample() chỉ có 1 khách ("a") -> không đủ để chạy K-means (cần k <= số
+# khách). Các test liên quan tới add_rfm_segment/write_rfm dùng bản mở rộng
+# này (thêm khách "b") thay vì sample() thuần.
+def sample_two_customers(spark):
+    return sample(spark).union(
+        spark.createDataFrame(
+            [("b", "j1", datetime(2011, 12, 3, tzinfo=timezone.utc), 2, 15.0)],
+            "CustomerID string, InvoiceNo string, InvoiceDate timestamp, "
+            "Quantity int, UnitPrice double",
+        )
+    )
 
 
 # Không có giao dịch nào trước ngày chốt -> select_history phải raise, không trả về bảng rỗng.
@@ -242,6 +337,35 @@ def test_select_history_boundary_exact_cutoff(spark):
     history = select_history(df, "2011-12-10")
     invoices = [row.InvoiceNo for row in history.collect()]
     assert invoices == ["i1"]
+
+# Khi có cột year/month (dữ liệu curated partitioned), select_history phải
+# loại đúng partition không liên quan trước, kết quả cuối vẫn giống hệt như
+# không có year/month (chỉ khác cách Spark đọc dữ liệu, không khác kết quả).
+def test_select_history_prunes_partitions_when_year_month_present(spark):
+    df = spark.createDataFrame(
+        [
+            ("a", "i1", datetime(2011, 8, 15, tzinfo=timezone.utc), 1, 10., 2011, 8),
+            ("a", "i2", datetime(2011, 9, 5, tzinfo=timezone.utc), 1, 20., 2011, 9),
+            # Nằm trong tháng cutoff nhưng sau ngày cutoff -> vẫn phải bị loại
+            # bởi filter InvoiceDate, dù year/month khớp.
+            ("a", "i3", datetime(2011, 9, 20, tzinfo=timezone.utc), 1, 999., 2011, 9),
+            # Partition ở tương lai -> phải bị loại bởi cả 2 lớp filter.
+            ("a", "i4", datetime(2012, 1, 1, tzinfo=timezone.utc), 1, 999., 2012, 1),
+        ],
+        "CustomerID string, InvoiceNo string, InvoiceDate timestamp, "
+        "Quantity int, UnitPrice double, year int, month int",
+    )
+
+    history = select_history(df, "2011-09-10")
+    invoices = {row.InvoiceNo for row in history.collect()}
+    assert invoices == {"i1", "i2"}
+
+
+# Không có year/month thì hành vi giữ nguyên như trước (chỉ lọc InvoiceDate).
+def test_select_history_without_partition_columns_still_filters_by_date(spark):
+    history = select_history(sample(spark), "2011-12-10")
+    invoices = {row.InvoiceNo for row in history.collect()}
+    assert invoices == {"i1", "i2"}
 
 
 # Nhiều khách hàng cùng lúc: đảm bảo groupBy tách đúng theo từng CustomerID,
@@ -296,33 +420,93 @@ def test_compute_rfm_rounds_after_summing_line_totals(spark):
 
 # Tính R,F,M; loại giao dịch tại ngày chốt, từ chối ngày output sai và khách trùng
 def test_metrics_and_cutoff(spark):
-    df = sample(spark)
+    df = sample_two_customers(spark)
     validate_curated_contract(df)
     output = add_rfm_scores(compute_rfm(select_history(df, "2011-12-10"), "2011-12-10"))
-    validate_rfm_output(output, "2011-12-10")
-    row = output.first()
+    output = add_rfm_segment(output, k=2)
+    validate_rfm_output(output, "2011-12-10", k=2)
+    row = output.filter(F.col("CustomerID") == "a").first()
     assert (row.Recency, row.Frequency, row.Monetary) == (1, 2, Decimal("110.00"))
     with pytest.raises(ValueError, match="run_date"):
-        validate_rfm_output(output, "2011-12-11")
+        validate_rfm_output(output, "2011-12-11", k=2)
     with pytest.raises(ValueError, match="duplicate"):
-        validate_rfm_output(output.union(output), "2011-12-10")
+        validate_rfm_output(output.union(output), "2011-12-10", k=2)
 
 # 4. Test partitioned Parquet output and overwrite behavior.
+@pytest.fixture
+def valid_cluster_output(spark):
+    # Validator tests do not need to train a clustering model.
+    return spark.createDataFrame(
+        [("a", date(2011, 12, 10), datetime(2011, 12, 9, tzinfo=timezone.utc),
+          1, 2, 110.0, 5, 5, 5, "555", 0)],
+        "CustomerID string, run_date date, LastPurchaseDate timestamp, "
+        "Recency int, Frequency int, Monetary double, R_score int, "
+        "F_score int, M_score int, RFM_score string, Cluster int",
+    )
+
+
+def test_validate_rfm_output_rejects_missing_cluster(valid_cluster_output):
+    with pytest.raises(ValueError, match="missing columns.*Cluster"):
+        validate_rfm_output(valid_cluster_output.drop("Cluster"), "2011-12-10", k=2)
+
+
+@pytest.mark.parametrize("cluster", [None, -1, 2, 999])
+def test_validate_rfm_output_rejects_invalid_cluster(valid_cluster_output, cluster):
+    output = valid_cluster_output.withColumn("Cluster", F.lit(cluster).cast("int"))
+    with pytest.raises(ValueError, match="invalid.*Cluster"):
+        validate_rfm_output(output, "2011-12-10", k=2)
+
+
+@pytest.mark.parametrize("cluster", [0.5, 0.0, "0", float("nan"), float("inf")])
+def test_validate_rfm_output_rejects_noninteger_cluster_type(valid_cluster_output, cluster):
+    output = valid_cluster_output.withColumn("Cluster", F.lit(cluster))
+    with pytest.raises(ValueError, match="Cluster must have an integer type"):
+        validate_rfm_output(output, "2011-12-10", k=2)
+
+
+@pytest.mark.parametrize("dtype", ["int", "bigint"])
+@pytest.mark.parametrize("cluster", [0, 1])
+def test_validate_rfm_output_accepts_cluster_boundaries(valid_cluster_output, dtype, cluster):
+    output = valid_cluster_output.withColumn("Cluster", F.lit(cluster).cast(dtype))
+    validate_rfm_output(output, "2011-12-10", k=2)
+
+
+def test_output_validation_requires_valid_k(valid_cluster_output, tmp_path):
+    with pytest.raises(TypeError):
+        validate_rfm_output(valid_cluster_output, "2011-12-10")
+    with pytest.raises(TypeError):
+        write_rfm(valid_cluster_output, str(tmp_path), "2011-12-10")
+    with pytest.raises(ValueError, match="at least 2"):
+        validate_rfm_output(valid_cluster_output, "2011-12-10", k=1)
+
+
+def test_write_rfm_rejects_invalid_cluster_before_writing(valid_cluster_output, tmp_path):
+    output_root = tmp_path / "invalid_rfm"
+    output = valid_cluster_output.withColumn("Cluster", F.lit(2))
+    with pytest.raises(ValueError, match="invalid.*Cluster"):
+        write_rfm(output, str(output_root), "2011-12-10", k=2)
+    assert not output_root.exists()
+
+
 def test_write_rfm_writes_partitioned_parquet_and_overwrites(spark, tmp_path):
     run_date = "2011-12-10"
     output_root = tmp_path / "rfm"
     output = add_rfm_scores(
-        compute_rfm(select_history(sample(spark), run_date), run_date)
+        compute_rfm(select_history(sample_two_customers(spark), run_date), run_date)
     )
-
-    output_path = write_rfm(output, str(output_root), run_date)
+    output = add_rfm_segment(output, k=2)
+    output_path = write_rfm(output, str(output_root), run_date, k=2)
     partition_path = output_root / f"run_date={run_date}"
 
     assert partition_path == Path(output_path)
     assert any(partition_path.glob("*.parquet"))
 
-    replacement = output.withColumn("CustomerID", F.lit("replacement"))
-    write_rfm(replacement, str(output_root), run_date)
+    # Replace the whole partition with a single renamed row (overwrite, not append).
+    replacement = (
+        output.filter(F.col("CustomerID") == "a")
+        .withColumn("CustomerID", F.lit("replacement"))
+    )
+    write_rfm(replacement, str(output_root), run_date, k=2)
 
     rows = spark.read.parquet(str(output_root)).collect()
     assert [(row.CustomerID, row.run_date) for row in rows] == [
@@ -333,7 +517,7 @@ def test_write_rfm_writes_partitioned_parquet_and_overwrites(spark, tmp_path):
 def test_write_rfm_overwrite_preserves_other_dates(spark, tmp_path):
     """Replacing one daily partition must preserve all values in the other."""
     output_root = str(tmp_path / "rfm")
-    transactions = sample(spark)
+    transactions = sample_two_customers(spark)
     first_date, second_date = "2011-12-10", "2011-12-11"
     first_output = add_rfm_scores(
         compute_rfm(select_history(transactions, first_date), first_date)
@@ -341,30 +525,42 @@ def test_write_rfm_overwrite_preserves_other_dates(spark, tmp_path):
     second_output = add_rfm_scores(
         compute_rfm(select_history(transactions, second_date), second_date)
     )
-    write_rfm(first_output, output_root, first_date)
-    write_rfm(second_output, output_root, second_date)
+    first_output = add_rfm_segment(first_output, k=2)
+    second_output = add_rfm_segment(second_output, k=2)
+
+    write_rfm(first_output, output_root, first_date, k=2)
+    write_rfm(second_output, output_root, second_date, k=2)
 
     before = spark.read.parquet(output_root).collect()
-    assert len(before) == 2
+    # 2 khách ("a", "b") x 2 ngày = 4 dòng.
+    assert len(before) == 4
     assert {row.run_date for row in before} == {
         date(2011, 12, 10), date(2011, 12, 11),
     }
-    preserved_before = [
-        row.asDict() for row in before if row.run_date == date(2011, 12, 11)
-    ]
+    preserved_before = sorted(
+        (row.asDict() for row in before if row.run_date == date(2011, 12, 11)),
+        key=lambda r: r["CustomerID"],
+    )
 
-    replacement = first_output.withColumn("CustomerID", F.lit("replacement"))
-    write_rfm(replacement, output_root, first_date)
+    # Chỉ đổi tên khách "a" của ngày đầu để overwrite đúng 1 partition,
+    # tránh 2 dòng cùng ngày bị trùng CustomerID.
+    replacement = (
+        first_output.filter(F.col("CustomerID") == "a")
+        .withColumn("CustomerID", F.lit("replacement"))
+    )
+    write_rfm(replacement, output_root, first_date, k=2)
 
     after = spark.read.parquet(output_root).collect()
-    assert len(after) == 2
+    assert len(after) == 3
     assert {(row.CustomerID, row.run_date) for row in after} == {
         ("replacement", date(2011, 12, 10)),
         ("a", date(2011, 12, 11)),
+        ("b", date(2011, 12, 11)),
     }
-    preserved_after = [
-        row.asDict() for row in after if row.run_date == date(2011, 12, 11)
-    ]
+    preserved_after = sorted(
+        (row.asDict() for row in after if row.run_date == date(2011, 12, 11)),
+        key=lambda r: r["CustomerID"],
+    )
     assert preserved_after == preserved_before
     replaced = [row for row in after if row.run_date == date(2011, 12, 10)]
     assert replaced[0].asDict() == replacement.first().asDict()
@@ -378,7 +574,23 @@ def test_nonfinite_price_rejected(spark, price):
 
 # Nhận ngày hợp lệ, từ chối ngày không tồn tại
 def test_cli_date():
-    args = parse_args(["--input", "in", "--output", "out", "--run-date", "2011-12-10"])
+    args = parse_args(
+        ["--input", "in", "--output", "out", "--run-date", "2011-12-10", "--k", "4"]
+    )
     assert args.run_date == "2011-12-10"
+    assert args.k == 4
     with pytest.raises(SystemExit):
-        parse_args(["--input", "in", "--output", "out", "--run-date", "2011-02-30"])
+        parse_args(
+            ["--input", "in", "--output", "out", "--run-date", "2011-02-30", "--k", "4"]
+        )
+
+
+# --k không có giá trị mặc định: thiếu cờ này phải bị CLI từ chối ngay,
+# và --k < 2 cũng phải bị từ chối (K-means cần ít nhất 2 cụm).
+def test_cli_k_is_required_and_validated():
+    with pytest.raises(SystemExit):
+        parse_args(["--input", "in", "--output", "out", "--run-date", "2011-12-10"])
+    with pytest.raises(SystemExit):
+        parse_args(
+            ["--input", "in", "--output", "out", "--run-date", "2011-12-10", "--k", "1"]
+        )

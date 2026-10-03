@@ -20,7 +20,7 @@ compute_rfm_metrics   detect_anomalies
         notify_completion
 ```
 
-The intended data flow is:
+The standalone legacy cleaning flow is:
 
 ```text
 CSV in data/raw/
@@ -28,9 +28,19 @@ CSV in data/raw/
   -> deduplicated anomaly input in data/audit/anomalies.parquet/
 ```
 
-The cleaning job is implemented and tested. The DAG structure and task dependencies exist, but its tasks are still placeholders.
+The official DAG uses a readiness sensor, three Spark submissions and a completion task. It reads immutable daily landing files, writes versioned Parquet snapshots and publishes a small JSON manifest after both analytics branches succeed. See [SETUP](docs/SETUP.md) for preparation, pool configuration and manual trigger parameters; see [the detailed design](docs/DAG_DESIGN_VI.md) for book references and architectural reasons. The legacy commands below remain usable independently.
 
 RFM input excludes `StockCode` values `POST`, `M`, `DOT`, `BANK CHARGES`, `C2`, and `PADS`, plus rows whose `Description` is `PACKING CHARGE` or `NEXT DAY CARRIAGE` (case-insensitive, ignoring surrounding spaces). The anomaly input retains these rows.
+
+## Retrospective anomaly checks
+
+The standalone PySpark detector reads `data/audit/anomalies.parquet/` and preserves every row before `--run-date`, plus rows with a missing invoice date. It evaluates six invoice/business checks and upper product-level IQR checks for quantity, unit price, and line value. IQR references use the same pre-cutoff history, positive non-cancelled sales, at least 30 eligible rows per stock code, and a positive IQR; no global fallback is used. Missing CustomerID does not exclude a row. Keyword matches are context only, using same-stock product names seen on at least two distinct positive sales invoices.
+
+```powershell
+docker compose run --rm --no-deps airflow-scheduler bash -c 'spark-submit --master local[2] --driver-memory 3g /opt/airflow/scripts/pyspark_anomalies.py --input /opt/airflow/data/audit/anomalies.parquet --output /opt/airflow/data/audit/anomaly_results --run-date 2011-12-10'
+```
+
+The job writes `data/audit/anomaly_results/run_date=2011-12-10/`; rerunning replaces only that date. The example's two workers and 3 GB driver heap were verified with Docker assigned about 8 GB; the default 1 GB heap ran out of memory on the full dataset. `--iqr-multiplier` defaults to `3.0` and `--min-samples` to `30`. Results retain the eight source columns and include `data_quality_flags`, `context_flags`, nine ordered `check_results` with status/reason/evidence, `anomaly_flags`, and `assessment_status`. A flagged row is a review candidate, not a fraud finding. The cutoff and thresholds are retrospective, not validated for online scoring.
 
 ## Project structure
 
@@ -71,13 +81,16 @@ RFM input excludes `StockCode` values `POST`, `M`, `DOT`, `BANK CHARGES`, `C2`, 
 ├── tests/
 │   ├── fixtures/
 │   │   └── sample_transactions.csv
+│   ├── test_pyspark_anomalies.py Detector checks and partition write tests
 │   ├── test_pyspark_clean.py    Cleaning rules and Parquet write checks
 │   └── test_pyspark_jobs.py     Project-structure check
 ├── data/
 │   ├── raw/                     Local input CSV files
 │   ├── curated/RFM.parquet/     Clean, positive, non-cancelled RFM input
 │   ├── analytics/rfm_daily/     Reserved daily RFM results
-│   └── audit/anomalies.parquet/ Deduplicated anomaly input
+│   └── audit/
+│       ├── anomalies.parquet/   Deduplicated anomaly input
+│       └── anomaly_results/     Generated date-partitioned audit results
 ├── docs/
 │   ├── REPORT.md                Conceptual and architectural report
 │   ├── SETUP.md                 Detailed local setup instructions
@@ -133,7 +146,7 @@ The downloaded file is intentionally ignored by Git. Inside the Airflow containe
 
 ## Quick start
 
-Requirements: Docker Desktop with at least 4 GB of memory available, local port `8080` free, and Kaggle API credentials configured at `$HOME/.kaggle/kaggle.json`.
+Requirements: Docker Desktop with about 8 GB of memory available, local port `8080` free, and Kaggle API credentials configured at `$HOME/.kaggle/kaggle.json`.
 
 No local `pip install` is required. Building the image is the dependency-installation step because the Dockerfile runs `pip install -r requirements.txt` inside the image.
 
@@ -155,7 +168,7 @@ Open <http://localhost:8080> and sign in with the credentials configured in `.en
 docker compose ps
 docker compose exec airflow-scheduler airflow dags list
 docker compose exec airflow-scheduler spark-submit --version
-docker compose exec airflow-scheduler pytest /opt/airflow/tests
+docker compose exec airflow-scheduler python -m pytest -q tests/test_retail_contracts.py tests/test_retail_dag.py tests/test_retail_pipeline.py tests/test_pyspark_clean.py tests/test_pyspark_rfm.py tests/test_pyspark_anomalies.py
 docker compose down
 ```
 
@@ -174,10 +187,10 @@ Git commits and pull requests are the audit trail for individual changes. `.agen
 ## Current status
 
 - Project and collaboration structure: complete on `initial-setup`.
-- Docker configuration: statically validated; not built because Docker is unavailable in the current host shell.
-- DAG topology: complete placeholder skeleton.
+- Docker image, Airflow services and PostgreSQL: running; see [verification evidence](docs/IMPLEMENTATION_VI.md) for the scheduler run.
+- DAG: six real tasks, historical intervals, explicit manual dates, readiness checks, retries and a deadline callback.
 - Dataset selection and download location: complete.
-- Cleaning, RFM, anomaly detection, notification, and data validation logic: pending.
+- Cleaning, RFM, churn-proxy labels, order-total audit and publication manifests: implemented. See the verification report for runtime evidence.
 - Report, screenshots, and presentation: pending.
 
 See [`.agent/TODO.md`](.agent/TODO.md) for the live work queue.
