@@ -1,5 +1,11 @@
 # Current Handoff
 
+## Local snapshot pushed successfully - 2026-10-03
+
+- Owner: Codex; branch: `initial-setup`. User-authorized complete nonignored local snapshot committed as ba2bf05 (40 changed files), including notebook outputs, renamed guide, source/tests, all comparison Parquet/CRC/success markers and demo fixtures. Existing nine unpublished commits were also included in the branch push. Ignored files stayed local; nothing deleted.
+- Verification: `git push origin initial-setup` succeeded (8254828 -> ba2bf05); `git status --short --branch` showed no modified/untracked files and HEAD matched origin/initial-setup. Syntax/notebook/credential scan results and runtime limitations are recorded in the preparation entry below.
+- Next action: push this final TODO/HANDOFF bookkeeping commit, then verify clean status and matching remote HEAD. Main branch was not updated. No further publishing requested.
+
 ## Publish local snapshot preparation - 2026-10-03
 
 - Owner: Codex; branch/target: `initial-setup`. User explicitly authorized all modified and untracked local files, including generated comparison Parquet and fixtures visible to Git; ignored environment/raw/runtime files are excluded. Preserve exact user file contents.
