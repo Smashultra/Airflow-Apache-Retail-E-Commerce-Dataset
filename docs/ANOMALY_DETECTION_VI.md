@@ -244,6 +244,8 @@ Severity theo value_at_risk: high ≥ 1,000 GBP, medium ≥ 100 GBP, còn lại 
 
 ## 9. Kết quả chạy đầy đủ
 
+> **Lưu ý (tạm dừng 08/10/2026):** số liệu mục 9 là của lần chạy trước bản sửa sau review. Bản sửa thay đổi cấp baseline `customer` của `quantity_deviation` (yêu cầu trung vị của mã có ≥ 30 dòng), nên các con số sẽ được cập nhật sau khi chạy lại.
+
 Chạy ngày 08/10/2026 trong Docker (`local[2]`, driver 3 GB), `run_date = 2011-12-10`:
 
 ```bash

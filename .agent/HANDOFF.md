@@ -1,5 +1,25 @@
 # Current Handoff
 
+## Two-tier anomaly rule base: review fix pass PAUSED - 2026-10-08
+
+- Owner: Claude; branch `feature/anomaly-rule-base`. All 8 plan tasks are done (see entry below). A fresh whole-branch review returned "with fixes". The fix pass is **in progress, paused at the user's request**.
+- Done and committed in this pause commit:
+  - Not-applied checks no longer carry evidence (value_at_risk, context_level, reference_*, robust_z, fold_change). Test: `test_not_applied_checks_carry_no_evidence`.
+  - The customer-level quantity baseline now needs a stock median from >= min_samples identified lines, so a rare stock no longer compares to itself. Test: `test_customer_level_requires_reliable_stock_median`.
+  - Quantity abs/sum is cast to double, so Quantity = -2147483648 no longer overflows under ANSI. Test: `test_extreme_negative_quantity_does_not_overflow`.
+  - Robust-z gate coverage with a dispersed baseline. Test: `test_robust_z_gate_with_dispersed_baseline`; a mutation check confirmed it fails when the gate is disabled.
+- Verification so far: the 4 new tests went RED then GREEN. `tests/test_pyspark_anomalies.py` ran with 17 passed and 2 fixture-caused failures; both fixtures are fixed, and `-k "hierarchy or overflow"` now gives 2 passed. The full anomaly suite has not been re-run in one go since the fixture fix.
+- Remaining steps, about 35-40 min:
+  1. Reproducibility (review Important #4): add the E8 follow-up (no-purchase cancels by fee share/month/description) and E9 (lines per invoice, web invoice value/day) to `scripts/anomaly_evidence.py`. Add the MAD=0 %, low %, fold p10/p50/p90 and price-direction tables to `scripts/anomaly_summary.py` R5.
+  2. Run the full Docker suite (README command plus `tests/test_anomaly_evidence.py`).
+  3. Re-run full-data `pyspark_anomalies.py` and `anomaly_summary.py` (commands in doc section 9). The review fixes change the customer-level counts, so **doc section 9 numbers are stale until re-run**.
+  4. Update doc sections 9 and 8 and the ledger `.superpowers/sdd/2026-10-08-anomaly-rule-base/progress.md` (Final: lines).
+  5. Commit, then run finishing-a-development-branch. Do not merge or push without the user's request.
+- Deferred minors from the review:
+  - `assess_orders` derives its channel with `F.trim` instead of `_normalized`, so edge whitespace IDs can disagree with the row channel.
+  - The doc says |ΣQ| but the code compares Σ|Q| for unmatched_return.
+  - There is no test for the Task 7 `outside_scope` order ruling.
+
 ## Two-tier anomaly rule base - 2026-10-08
 
 - Owner: Claude; branch: `feature/anomaly-rule-base` (from `main` 57e6afe). Plan `.agent/plans/archive/2026-10-08-anomaly-rule-base.md`. Not pushed or merged.

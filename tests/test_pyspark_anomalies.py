@@ -1,6 +1,8 @@
 """Behavior checks for the retrospective anomaly audit job."""
 
 from datetime import datetime
+import math
+import statistics
 
 import pytest
 from pyspark.sql import SparkSession
@@ -322,6 +324,7 @@ def test_quantity_hierarchy_levels(spark):
     rows += [row("S6", "10X", "item", 40, 2.0, "A"), row("S7", "10X", "item", 25, 2.0, "A")]
     rows += [row(f"B{i}", "10X", "item", 10, 2.0, "B") for i in range(2)]
     rows += [row(f"BY{i}", "10Y", "other", 5, 1.0, "B") for i in range(25)]
+    rows += [row(f"EY{i}", "10Y", "other", 5, 1.0, "E2") for i in range(5)]
     rows += [row("K0", "10X", "item", 10, 2.0, "C")]
     rows += [row(f"D{i}", "10X", "item", 10, 2.0, "D") for i in range(25)]
     rows += [row(f"R{i}", "10X", "item", 1, 4.0, None) for i in range(30)]
@@ -455,3 +458,69 @@ def test_assess_orders_empty_and_sparse(spark):
     assert empty.count() == 0 and "status" in empty.columns
     single = assess_orders(spark.createDataFrame([row("1", "60G")], TRANSACTION_SCHEMA), "2011-12-10")
     assert single.first().reason == "insufficient_history"
+
+
+def test_not_applied_checks_carry_no_evidence(spark):
+    rows = [row(f"V{i}", "70H", "sale", 10, 2.0, "V") for i in range(6)]
+    rows += [row("CV1", "70H", "cancel", -3, 2.0, "V"), row("V9", "70H", "free", 2, 0.0, "V")]
+    found = {r.Description: checks(r) for r in build_output(
+        spark.createDataFrame(rows, TRANSACTION_SCHEMA), "2011-12-10").collect()}
+
+    evidence = ("context_level", "reference_count", "reference_median", "reference_mad",
+                "robust_z", "fold_change", "value_at_risk", "severity")
+    for description, rule in (("sale", "manual_accounting_entry"), ("sale", "inventory_adjustment"),
+                              ("sale", "unmatched_return"), ("cancel", "quantity_deviation"),
+                              ("free", "quantity_deviation")):
+        check = found[description][rule]
+        assert check.status == "not_applied"
+        assert all(getattr(check, field) is None for field in evidence), (description, rule)
+
+
+def test_customer_level_requires_reliable_stock_median(spark):
+    rows = []
+    for stock in ("71A", "71B"):
+        rows += [row(f"G{stock}{i}", stock, "common", 12, 1.0, f"G{i}") for i in range(30)]
+        rows += [row(f"M{stock}{i}", stock, "common", 2, 1.0, "SMALL") for i in range(10)]
+    rows += [row("MRARE", "777R", "rare", 2, 1.0, "SMALL")]
+    found = {inv: c["quantity_deviation"] for inv, _, _, _, _, c in deviation_checks(spark, rows)}
+
+    assert found["MRARE"].status == "not_applied"
+    assert found["MRARE"].reason == "insufficient_history"
+
+
+def test_robust_z_gate_with_dispersed_baseline(spark):
+    def z_of(values, observed):
+        logs = [math.log(v) for v in values]
+        median = statistics.median(logs)
+        mad = statistics.median(abs(v - median) for v in logs)
+        return 0.6745 * (math.log(observed) - median) / mad
+
+    wide = [2, 4, 8, 16, 32, 40]
+    tight = [100, 100, 101, 99, 100, 102, 98, 150]
+    spike = [100, 101, 99, 100, 102, 98, 400]
+    rows = [row(f"WD{i}", "72Q", "wide", q, 1.0, "WIDE") for i, q in enumerate(wide)]
+    rows += [row(f"TI{i}", "72Q", "tight", q, 1.0, "TIGHT") for i, q in enumerate(tight)]
+    rows += [row(f"SP{i}", "72Q", "spike", q, 1.0, "SPIKE") for i, q in enumerate(spike)]
+    found = {inv: c["quantity_deviation"] for inv, _, _, _, _, c in deviation_checks(spark, rows)}
+
+    large_fold = found["WD5"]
+    assert large_fold.fold_change >= 3 and large_fold.robust_z == pytest.approx(z_of(wide, 40))
+    assert large_fold.robust_z < 3.5 and large_fold.status == "not_flagged"
+    large_z = found["TI7"]
+    assert large_z.robust_z == pytest.approx(z_of(tight, 150)) and large_z.robust_z > 3.5
+    assert large_z.fold_change < 3 and large_z.status == "not_flagged"
+    both = found["SP6"]
+    assert both.robust_z == pytest.approx(z_of(spike, 400)) and both.status == "flagged"
+
+
+def test_extreme_negative_quantity_does_not_overflow(spark):
+    rows = [row("690", "73Z", "first day", 1, 1.0, "X9", when=datetime(2011, 1, 1)),
+            row("700", "73Z", "sold", 2, 1.0, "X1"),
+            row("701", "73Z", "lost", -2147483648, 0.0, None),
+            row("C702", "73Z", "huge cancel", -2147483648, 1.0, "X1")]
+    source = spark.createDataFrame(rows, TRANSACTION_SCHEMA)
+    result = build_output(source, "2011-12-10")
+    validate_output(source, result, "2011-12-10")
+    found = {r.Description: checks(r) for r in result.collect()}
+    assert found["lost"]["inventory_adjustment"].status == "flagged"
+    assert found["huge cancel"]["unmatched_return"].status == "flagged"

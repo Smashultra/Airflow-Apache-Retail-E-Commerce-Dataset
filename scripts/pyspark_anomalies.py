@@ -141,20 +141,25 @@ def _check(tier: str, rule: str, reason: Column, flagged: Column, *,
 
     status = (F.when(reason.isNotNull(), "not_applied")
               .when(F.coalesce(flagged, F.lit(False)), "flagged").otherwise("not_flagged"))
-    value = number(value_at_risk)
+    applied = reason.isNull()
+
+    def evidence(value: Column) -> Column:
+        return F.when(applied, value)
+
+    value = evidence(number(value_at_risk))
     return F.struct(
         F.lit(tier).alias("tier"),
         F.lit(rule).alias("rule"),
         status.alias("status"),
         reason.cast("string").alias("reason"),
-        (context_level if context_level is not None else F.lit(None)).cast("string").alias("context_level"),
+        evidence(context_level if context_level is not None else F.lit(None)).cast("string").alias("context_level"),
         number(observed).alias("observed_value"),
-        (reference_count.cast("long") if reference_count is not None
-         else F.lit(None).cast("long")).alias("reference_count"),
-        number(reference_median).alias("reference_median"),
-        number(reference_mad).alias("reference_mad"),
-        number(robust_z).alias("robust_z"),
-        number(fold_change).alias("fold_change"),
+        evidence(reference_count.cast("long") if reference_count is not None
+                 else F.lit(None).cast("long")).alias("reference_count"),
+        evidence(number(reference_median)).alias("reference_median"),
+        evidence(number(reference_mad)).alias("reference_mad"),
+        evidence(number(robust_z)).alias("robust_z"),
+        evidence(number(fold_change)).alias("fold_change"),
         value.alias("value_at_risk"),
         F.when(status == "flagged", severity if severity is not None else _severity_from_value(value))
         .cast("string").alias("severity"),
@@ -367,7 +372,10 @@ def add_deviation_checks(frame: DataFrame, z_threshold: float, min_samples: int)
     identified = sales.filter((F.col("__baseline_group") == "identified") & F.col("__customer").isNotNull())
     pair, channel = ["__customer", "__stock"], ["__baseline_group", "__stock"]
     quantity_channel = robust_baseline(sales, channel, log_quantity, "__q3")
-    stock_median = quantity_channel.filter(F.col("__baseline_group") == "identified").select(
+    # The customer level normalizes by the stock's identified median, so that median
+    # must itself rest on min_samples lines; otherwise a rare stock compares to itself.
+    stock_median = quantity_channel.filter(
+        (F.col("__baseline_group") == "identified") & (F.col("__q3_n") >= min_samples)).select(
         "__stock", F.col("__q3_med").alias("__stock_qmed"))
     quantity_customer = robust_baseline(
         identified.join(stock_median, "__stock"), ["__customer"],
@@ -440,12 +448,12 @@ def add_operational_checks(frame: DataFrame) -> DataFrame:
     purchased = dated_sales.filter(F.col("__customer").isNotNull()).groupBy(*pair).agg(
         F.sum("Quantity").alias("__purchased"))
     returned = frame.filter((F.col("record_type") == "cancellation") & F.col("__customer").isNotNull()).groupBy(
-        *pair).agg(F.sum(F.abs("Quantity")).alias("__returned"))
+        *pair).agg(F.sum(F.abs(F.col("Quantity").cast("double"))).alias("__returned"))
     history_start = frame.agg(F.min("InvoiceDate")).first()[0]
     result = (frame.join(stock_price, "__stock", "left").join(purchased, pair, "left")
               .join(returned, pair, "left"))
     record_type = F.col("record_type")
-    estimated = lambda quantity: F.round(F.abs(quantity) * F.col("__stock_price"), 2)
+    estimated = lambda quantity: F.round(F.abs(quantity.cast("double")) * F.col("__stock_price"), 2)
 
     def scope(kind: str) -> Column:
         return F.when(record_type != kind, "outside_scope")
