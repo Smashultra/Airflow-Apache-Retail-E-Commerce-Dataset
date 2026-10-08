@@ -1,6 +1,6 @@
 # Phát hiện bất thường: EDA, insight và rule base hai cấp
 
-Tài liệu này gom toàn bộ phần anomaly của dự án vào một chỗ: chuẩn tham chiếu, các kết quả EDA đã có, bằng chứng mới, insight, bộ rule kèm logic, nhật ký triển khai và kết quả chạy. Mã nguồn: [pyspark_anomalies.py](../scripts/pyspark_anomalies.py). Bảng bằng chứng: [anomaly_evidence.py](../scripts/anomaly_evidence.py). Kế hoạch: `.agent/plans/active/2026-10-08-anomaly-rule-base.md` (chuyển sang `archive/` khi xong).
+Tài liệu này gom toàn bộ phần anomaly của dự án vào một chỗ: chuẩn tham chiếu, các kết quả EDA đã có, bằng chứng mới, insight, bộ rule kèm logic, nhật ký triển khai và kết quả chạy. Mã nguồn: [pyspark_anomalies.py](../scripts/pyspark_anomalies.py). Bảng bằng chứng: [anomaly_evidence.py](../scripts/anomaly_evidence.py). Kế hoạch: `.agent/plans/archive/2026-10-08-anomaly-rule-base.md`.
 
 ## 1. Mục tiêu và phạm vi
 
@@ -44,7 +44,7 @@ Nguồn: [EDA_Anomalies_Guide_VI.md](../notebooks/EDA_Anomalies_Guide_VI.md), [E
 | Đơn giá âm | 2 dòng `Adjust bad debt`, −11,062.06 GBP |
 | Giá 0 trong hóa đơn có dòng trả tiền | 33 (có ID) và 362 (thiếu ID) |
 
-## 4. Bằng chứng mới (E1–E8)
+## 4. Bằng chứng mới (E1–E9)
 
 Tái tạo:
 
@@ -240,10 +240,93 @@ Severity theo value_at_risk: high ≥ 1,000 GBP, medium ≥ 100 GBP, còn lại 
 | 5 | `BUSINESS_RULES`, `add_operational_checks`: giá 0, kiểm kho, bút toán, hủy vượt mua | value_at_risk ước tính bằng giá bán trung vị của mã; `unmatched_return` loại mã phí và 30 ngày đầu | `test_operational_rules_value_at_risk`, `test_unmatched_return_collective` → pass; suite 14 passed |
 | 6 | Lắp `build_output` (14 check theo thứ tự `RULES`), `validate_output`, CLI `--z-threshold`, log theo tier/kênh/severity; bỏ IQR và rule cũ; cập nhật README | Thêm `localCheckpoint()` sau phân loại và sau deviation: một test 10 dòng giảm từ 94 s xuống 32 s, cả suite từ hơn 9 phút (kèm lỗi bộ nhớ broadcast) xuống 110 s | suite anomaly 13 passed |
 | 7 | Chuyển `assess_orders` từ `retail_pipeline.py` sang `pyspark_anomalies.py`; thay mean + 3σ toàn cục bằng baseline robust theo khách (≥ 5 hóa đơn) → kênh (≥ 30 hóa đơn, identified hoặc retail) | `retail_pipeline.run_audit` chỉ import và ghi ba output; tiêu chí eligibility và các reason cũ giữ nguyên, `insufficient_reference`/`zero_or_invalid_stddev` thay bằng `insufficient_history` | `test_order_value_customer_then_channel_baseline`, `test_assess_orders_empty_and_sparse` → pass; anomaly + pipeline + DAG + contracts 30 passed |
+| 8 | Chạy clean + anomaly trên toàn bộ dữ liệu, script `anomaly_summary.py`, kết quả mục 9 | 536,641 dòng; phân loại khớp E2/E4; 46,933 dòng và 54 hóa đơn bị flag; phát hiện cần hiệu chỉnh rule ngữ cảnh (mục 9.3) | Job exit 0 (252 s); summary exit 0 |
 
 ## 9. Kết quả chạy đầy đủ
 
-Điền sau khi triển khai xong (Task 8).
+Chạy ngày 08/10/2026 trong Docker (`local[2]`, driver 3 GB), `run_date = 2011-12-10`:
+
+```bash
+docker compose run --rm --no-deps airflow-scheduler bash -c 'spark-submit --master local[2] --driver-memory 3g /opt/airflow/scripts/pyspark_clean.py --input /opt/airflow/data/raw/data.csv --rfm-output /opt/airflow/data/curated/RFM.parquet --anomalies-output /opt/airflow/data/audit/anomalies.parquet'
+docker compose run --rm --no-deps airflow-scheduler bash -c 'spark-submit --master local[2] --driver-memory 3g /opt/airflow/scripts/pyspark_anomalies.py --input /opt/airflow/data/audit/anomalies.parquet --output /opt/airflow/data/audit/anomaly_results --run-date 2011-12-10'
+docker compose run --rm --no-deps airflow-scheduler bash -c 'spark-submit --master local[2] --driver-memory 3g /opt/airflow/scripts/anomaly_summary.py --results /opt/airflow/data/audit/anomaly_results/run_date=2011-12-10 --input /opt/airflow/data/audit/anomalies.parquet --run-date 2011-12-10'
+```
+
+Job anomaly: exit 0, 252 giây, 536,641 dòng vào và ra (multiset được `validate_output` xác nhận).
+
+**Đối soát với bằng chứng Task 1:** số dòng theo `record_type` (sale 522,451; cancellation 9,251; fee_service 2,441; inventory_adjustment 2,101; zero_price_line 394; accounting_adjustment 3) và theo `channel` (identified 401,604; retail_web 120,114; retail_other 12,819; internal 2,104) khớp tuyệt đối bảng E2/E4 tính độc lập bằng pandas.
+
+### 9.1. Cấp dòng
+
+| Trạng thái | Mức cao nhất | Dòng |
+|---|---|---:|
+| flagged | high | 165 |
+| flagged | medium | 2,201 |
+| flagged | low | 44,567 |
+| not_flagged | – | 489,708 |
+
+| Tier | Rule | Dòng | Hóa đơn | value_at_risk (GBP) | high | medium | low |
+|---|---|---:|---:|---:|---:|---:|---:|
+| business | quantity_deviation | 25,010 | 6,421 | 967,400.53 | 71 | 1,176 | 23,763 |
+| business | price_deviation | 21,659 | 4,610 | 400,333.92 | 23 | 456 | 21,180 |
+| business | inventory_adjustment | 2,101 | 2,092 | 469,433.79 | 70 | 594 | 1,437 |
+| business | unmatched_return | 572 | 307 | 13,444.14 | 1 | 16 | 555 |
+| business | zero_price_sale_line | 388 | 47 | 5,368.14 | 0 | 9 | 379 |
+| business | all_zero_price_invoice | 6 | 3 | 11,503.16 | 1 | 4 | 1 |
+| business | manual_accounting_entry | 3 | 3 | 33,186.18 | 3 | 0 | 0 |
+| data | missing_description | 1,454 | 1,454 | – | 0 | 0 | 1,454 |
+
+Các data rule còn lại không có dòng nào bị flag: dữ liệu sau loại trùng không thiếu trường bắt buộc, không có số không hợp lệ, không có xung đột dấu, không có hóa đơn nhiều khách hay lệch header.
+
+Rule ngữ cảnh theo cấp baseline:
+
+| Rule | Cấp | Áp dụng | Flag | % flag có MAD = 0 | % flag mức low | fold p10 / p50 / p90 |
+|---|---|---:|---:|---:|---:|---|
+| quantity_deviation | customer_stock | 54,741 | 1,663 | 90.6 | 87.9 | 3.0 / 4.0 / 10.0 |
+| quantity_deviation | customer | 324,038 | 12,766 | 87.9 | 95.7 | 3.0 / 4.0 / 8.0 |
+| quantity_deviation | channel_stock | 122,626 | 10,581 | 96.8 | 95.3 | 3.0 / 4.0 / 12.0 |
+| price_deviation | customer_stock | 54,741 | 399 | 99.7 | 98.7 | 0.29 / 1.32 / 2.98 |
+| price_deviation | channel_stock | 432,656 | 21,260 | 83.0 | 97.8 | 0.33 / 1.32 / 3.11 |
+
+Flag giá ở kênh identified theo chiều: giá cao hơn baseline có số lượng trung vị 3 (6,122 dòng), giá thấp hơn có số lượng trung vị 12 (3,542 dòng).
+
+Ví dụ có giá trị lớn nhất:
+
+| Rule | Hóa đơn | Mô tả | Quan sát | Baseline | value_at_risk (GBP) |
+|---|---|---|---|---|---:|
+| quantity_deviation | 541431 | MEDIUM CERAMIC TOP STORAGE JAR, khách 12346 | Qty 74,215 | 12 | 77,171.12 |
+| price_deviation | 556444 | PICNIC BASKET WICKER 60 PIECES, khách 15098 | 649.50 | 5.95 | 38,613.00 |
+| inventory_adjustment | 558379 | "mouldy, unsaleable." | Qty −1,681 | – | 16,725.95 |
+| manual_accounting_entry | A563185–A563187 | Adjust bad debt | ±11,062.06 | – | 11,062.06 mỗi dòng |
+| all_zero_price_invoice | 578841 | ASSTD DESIGN 3D PAPER STICKERS, khách 13256 | Qty 12,540, giá 0 | – | 10,659.00 |
+| unmatched_return | C550456 | TEA TIME PARTY BUNTING, khách 15749 | hủy 1,300 | – | 3,315.00 |
+| zero_price_sale_line | 574138 | BISCUIT TIN VINTAGE CHRISTMAS, khách 12415 | Qty 216, giá 0 | – | 624.24 |
+
+### 9.2. Cấp hóa đơn
+
+| Kênh | flagged | not_flagged | not_assessable |
+|---|---:|---:|---:|
+| identified | 54 | 18,448 | 3,688 |
+| retail_web | 0 | 687 | 7 |
+| retail_other | 0 | 717 | 200 |
+| internal | 0 | 0 | 2,099 |
+
+54 hóa đơn bị flag (ngưỡng cũ mean + 3σ toàn cục: 133): 44 ở cấp khách (23 high, 20 medium, 1 low) và 10 ở cấp kênh (đều high, tổng 356,233.01 GBP). Lớn nhất là 581483 (168,469.60 GBP, gấp 557 lần trung vị kênh) và 541431 (77,183.60 GBP); cả hai đều có hóa đơn hủy tương ứng ngay sau đó (xem EDA). Không hóa đơn lẻ nào thỏa đồng thời z > 3.5 và gấp ≥ 3 lần trung vị kênh lẻ; lưu ý một hóa đơn DOT có thể gộp nhiều đơn web (E9).
+
+Lý do không đánh giá: hóa đơn hủy 3,836; có dòng không hợp lệ (giá 0, số lượng âm…) 2,157; ngoài phạm vi (bút toán A563185) 1.
+
+### 9.3. Đánh giá và đề xuất hiệu chỉnh (chờ duyệt)
+
+- **Flag high/medium (2,366 dòng, 54 hóa đơn) có ý nghĩa rõ ràng:** đơn đặt nhầm cực lớn rồi hủy, giá lệch hàng trăm lần, lô hàng mốc bị hủy hàng chục nghìn GBP, bút toán nợ xấu, giao hàng không tính tiền.
+- **Flag low (44,567 dòng) chủ yếu là hành vi bình thường:**
+  - 83–99.7% flag ngữ cảnh có MAD = 0 (E7: giá và lô hàng của khách gần như cố định), nên điều kiện z-score không còn tác dụng; chỉ ngưỡng trọng yếu quyết định.
+  - Lệch giá phần lớn là **giá theo bậc số lượng** (mua ít giá cao, mua nhiều giá thấp), không phải bất thường.
+  - Lệch số lượng trung vị gấp 4 lần, value_at_risk trung vị 10–16 GBP: khách sỉ tăng đơn mùa cao điểm là bình thường.
+- **Hướng hiệu chỉnh đề xuất** (hằng số đã chốt trước khi chạy theo tinh thần ISA 520; thay đổi cần người dùng duyệt):
+  1. Baseline giá theo cả **bậc số lượng** (ví dụ khách × mã × nhóm lô), hoặc bỏ cấp `channel_stock` cho giá của khách định danh.
+  2. Đặt **MAD tối thiểu** trên thang log (ví dụ 0.1) để điều kiện z-score luôn có hiệu lực.
+  3. Đặt **ngưỡng value_at_risk tối thiểu** cho rule ngữ cảnh (ví dụ 50 GBP), hoặc coi mức low là thông tin, không đưa vào danh sách cần xem xét.
+  4. Tăng fold số lượng ở cấp `channel_stock` (ví dụ ≥ 5) vì baseline kênh rộng hơn baseline của chính khách.
 
 ## 10. Giới hạn
 
@@ -251,3 +334,5 @@ Severity theo value_at_risk: high ≥ 1,000 GBP, medium ≥ 100 GBP, còn lại 
 - Kênh `retail_web` dựa trên sự có mặt của DOT; một hóa đơn web không có dòng DOT sẽ rơi vào `retail_other`.
 - Baseline in-sample: dòng được đánh giá cũng nằm trong baseline; median/MAD hạn chế ảnh hưởng nhưng không loại bỏ hoàn toàn.
 - Hiệu ứng đầu kỳ: giao dịch trước 01/12/2010 không có trong dữ liệu.
+- Kết quả mục 9 chạy qua CLI độc lập. Stage `detect_anomalies` của DAG dùng cùng `build_output` và `assess_orders`, nhưng chưa chạy lại end-to-end qua Airflow trong lần nâng cấp này.
+- Handbook (`docs/handbook/`) và `docs/DAG_DESIGN_VI.md` vẫn mô tả bộ check cũ (chín row check, ngưỡng mean + 3σ); tài liệu này là mô tả hiện hành.

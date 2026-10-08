@@ -1,5 +1,14 @@
 # Current Handoff
 
+## Two-tier anomaly rule base - 2026-10-08
+
+- Owner: Claude; branch: `feature/anomaly-rule-base` (from `main` 57e6afe). Plan `.agent/plans/archive/2026-10-08-anomaly-rule-base.md`. Not pushed or merged.
+- `scripts/pyspark_anomalies.py` now classifies rows (`record_type`) and invoices (`channel`: identified, retail_web via DOT, retail_other, internal), then runs 14 checks: 7 tier-1 data rules (ISO/IEC 25012 / DAMA) and 7 tier-2 business rules (contextual quantity/price deviation with customer -> channel robust baselines, zero-price lines, stock counts, accounting entries, unmatched returns). Each flag has value_at_risk (GBP) and severity. `assess_orders` moved here from `retail_pipeline.py` with customer -> channel robust baselines (replaces global mean + 3 sigma). CLI `--iqr-multiplier` replaced by `--z-threshold` (3.5).
+- Full documentation, evidence (E1-E9), rules and results: `docs/ANOMALY_DETECTION_VI.md`. Evidence script `scripts/anomaly_evidence.py` (pandas), result summary `scripts/anomaly_summary.py` (Spark).
+- Verification: Docker `python -m pytest -q -p no:cacheprovider tests/test_retail_contracts.py tests/test_retail_dag.py tests/test_retail_pipeline.py tests/test_pyspark_clean.py tests/test_pyspark_rfm.py tests/test_pyspark_anomalies.py tests/test_anomaly_evidence.py` -> 94 passed; host structure test passed (called directly, host has no pytest). Full-data clean + anomaly spark-submit exit 0 (252 s); 536,641 rows preserved; record_type/channel counts match independent pandas evidence exactly; 46,933 rows and 54 invoices flagged.
+- Risks: contextual rules over-flag low-value normal behaviour (83-99.7% of their flags have MAD = 0; price flags mostly quantity-tier pricing) — recalibration options in doc section 9.3 await user approval. DAG `detect_anomalies` stage not re-run end-to-end through Airflow (stack not initialized this session). Handbook and `docs/DAG_DESIGN_VI.md` still describe the old nine checks / mean + 3 sigma. Docker image was built with `--add-host` pinning PyPI to a fast CDN edge because two Fastly edges served ~40 KB/s; normal `docker compose build` works when the edges are healthy.
+- Next action: user decides on section 9.3 recalibration, then review/merge the branch.
+
 ## Online Retail guide without embedded images - 2026-10-03
 
 - Owner: Codex; branch: `main`. Inspected saved outputs: EDA_Anomalies.ipynb has two image outputs; EDA_RFM_Parquet.ipynb has seven. Neither corresponding guide embeds or links image files. Following the user's request, removed all nine image embeds from EDA_Online_Retail_Guide.md and deleted `notebooks/assets` after verifying its resolved workspace path and contents.

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-- Ngày: 2026-10-08. Trạng thái: chờ người dùng duyệt.
+- Ngày: 2026-10-08. Trạng thái: hoàn thành trên nhánh feature/anomaly-rule-base; kết quả và đề xuất hiệu chỉnh ở docs/ANOMALY_DETECTION_VI.md mục 9.
 - Owner: Claude. Nhánh: `feature/anomaly-rule-base` (tạo từ `main` trước Task 1).
 - Nguồn yêu cầu: trao đổi ngày 2026-10-08 — tách kênh (DOT/web, lẻ khác, nghiệp vụ kho), hai cấp data/business anomaly dựa trên chuẩn kiểm chứng, baseline theo từng khách định danh, chuyển `assess_orders` sang `pyspark_anomalies.py`, ghi toàn bộ quá trình vào một file markdown.
 

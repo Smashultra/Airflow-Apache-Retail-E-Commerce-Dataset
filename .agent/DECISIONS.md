@@ -2,6 +2,14 @@
 
 Use `YYYY-MM-DD HH:mm UTC+07:00` in every decision heading.
 
+## 2026-10-08 23:30 UTC+07:00 - Two-tier anomaly rule base
+
+- Status: Implemented on `feature/anomaly-rule-base` at the user's request; thresholds pending recalibration review.
+- Context: The previous detector used six business checks, global per-product IQR and a global mean + 3 sigma invoice threshold. EDA showed missing CustomerID is invoice-level, DOT invoices are almost all unidentified, retail prices are ~1.97x wholesale on the same product, and stock-count rows are a distinct record type.
+- Decision: Classify rows (record_type) and invoices (channel) before any rule. Tier 1 data rules map to ISO/IEC 25012 / DAMA dimensions; a missing CustomerID is a channel attribute, not a data anomaly. Tier 2 business rules follow Chandola et al. (2009) point/contextual/collective types. Contextual checks use the Iglewicz-Hoaglin modified z-score (3.5) on log values with hierarchical baselines (customer x stock >= 5, customer >= 20, channel x stock >= 30; orders: customer >= 5, channel >= 30) plus materiality limits fixed in advance (quantity x3, price +-30%, order x3). Each flag carries value_at_risk and severity (high >= 1,000 GBP, medium >= 100 GBP). `assess_orders` lives in `pyspark_anomalies.py`.
+- Consequences: Output schema changed (14 ordered checks with tier/severity; `--z-threshold` replaces `--iqr-multiplier`). Low-severity contextual flags are numerous on this data (see doc 9.3). `build_output` checkpoints lineage and is eager.
+- Revisit when: the user approves recalibrated constants, labelled outcomes become available, or online scoring is required.
+
 ## 2026-09-29 13:23 UTC+07:00 - Official historical DAG execution contracts
 
 - Status: Implemented under the user's explicit request to code the official DAG.
