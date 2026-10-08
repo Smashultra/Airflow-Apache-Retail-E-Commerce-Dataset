@@ -14,6 +14,7 @@ from scripts.pyspark_anomalies import (
     add_operational_checks,
     add_invoice_summary,
     add_record_context,
+    assess_orders,
     build_output,
     parse_args,
     validate_input_contract,
@@ -419,3 +420,38 @@ def test_unmatched_return_collective(spark):
     assert found["postage refund"].reason == "service_or_special_code"
     assert found["early return"].reason == "history_window_start"
     assert found["bought five"].reason == "outside_scope"
+
+
+def test_order_value_customer_then_channel_baseline(spark):
+    rows = [row(f"K1{i}", "60G", "order", 50, 2.0, "K1") for i in range(6)]
+    rows += [row("K16", "60G", "order", 225, 2.0, "K1")]
+    rows += [row(f"F{i}", "60G", "order", 50, 2.0, f"F{i}") for i in range(25)]
+    rows += [row("K20", "60G", "order", 60, 2.0, "K2")]
+    rows += [row(f"W{i}", "60G", "web", 25, 2.0, None) for i in range(30)]
+    rows += [row("W99", "DOT", "DOTCOM POSTAGE", 1, 10.0, None), row("W99", "60G", "web", 195, 2.0, None)]
+    rows += [row("W98", "60G", "web", 50, 2.0, None)]
+    rows += [row("BAD", "60G", "bad", 1, 20.0, "K3"), row("BAD", "60G", "bad", 1, -1.0, "K3"),
+             row("C1", "60G", "cancel", -1, 90.0, "K3")]
+    orders = {r.invoice_key: r for r in assess_orders(
+        spark.createDataFrame(rows, TRANSACTION_SCHEMA), "2011-12-10").collect()}
+
+    spike = orders["K16"]
+    assert (spike.status, spike.context_level, spike.channel) == ("flagged", "customer", "identified")
+    assert spike.order_total == 450.0 and spike.fold_change == 4.5
+    assert spike.value_at_risk == 350.0 and spike.severity == "medium"
+    assert orders["K20"].context_level == "channel" and orders["K20"].status == "not_flagged"
+    web = orders["W99"]
+    assert (web.channel, web.context_level, web.status) == ("retail_web", "channel", "flagged")
+    assert web.reference_median == 50.0
+    assert orders["W98"].status == "not_flagged" and orders["W98"].channel == "retail_other"
+    assert orders["BAD"].reason == "invalid_invoice_lines" and orders["BAD"].order_total is None
+    assert orders["BAD"].status == "not_assessable"
+    assert orders["C1"].reason == "cancelled_invoice"
+    assert orders["K10"].severity is None
+
+
+def test_assess_orders_empty_and_sparse(spark):
+    empty = assess_orders(spark.createDataFrame([], TRANSACTION_SCHEMA), "2011-12-10")
+    assert empty.count() == 0 and "status" in empty.columns
+    single = assess_orders(spark.createDataFrame([row("1", "60G")], TRANSACTION_SCHEMA), "2011-12-10")
+    assert single.first().reason == "insufficient_history"

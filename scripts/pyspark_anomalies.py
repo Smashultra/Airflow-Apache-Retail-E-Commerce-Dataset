@@ -477,6 +477,95 @@ def add_operational_checks(frame: DataFrame) -> DataFrame:
     return result.withColumn("__operational_checks", F.array(*checks))
 
 
+def assess_orders(transactions: DataFrame, run_date: str,
+                  z_threshold: float = Z_THRESHOLD, min_samples: int = 30) -> DataFrame:
+    """Invoice totals against the customer's own orders, then the channel's."""
+    cutoff = F.lit(run_date).cast("timestamp")
+    valid = (
+        (F.col("Quantity") > 0) & _finite(F.col("UnitPrice")) & (F.col("UnitPrice") > 0)
+        & F.col("InvoiceDate").isNotNull() & (F.col("InvoiceDate") < cutoff)
+        & F.col("Country").isNotNull() & (F.trim("Country") != "")
+    )
+    line_total = F.col("Quantity").cast("decimal(18,4)") * F.col("UnitPrice").cast("decimal(18,4)")
+    stock = F.upper(F.trim("StockCode"))
+    source = (
+        transactions.withColumn("invoice_key", F.upper(F.trim("InvoiceNo")))
+        .filter(F.col("invoice_key").isNotNull() & (F.col("invoice_key") != ""))
+        .withColumn("valid_line", F.coalesce(valid, F.lit(False)))
+        .withColumn("line_amount", F.when(F.col("valid_line"), line_total))
+        .withColumn("customer_key", F.when(F.trim("CustomerID") != "", F.trim("CustomerID")))
+        .withColumn("__accounting", F.coalesce(
+            F.col("invoice_key").startswith("A") | (stock == "B"), F.lit(False)))
+    )
+    orders = source.groupBy("invoice_key").agg(
+        F.count("*").alias("line_count"),
+        F.sum((~F.col("valid_line")).cast("int")).alias("invalid_lines"),
+        F.countDistinct("customer_key").alias("customer_ids"),
+        F.max("customer_key").alias("customer_key"),
+        F.countDistinct("Country").alias("countries"),
+        F.countDistinct(F.to_date("InvoiceDate")).alias("invoice_days"),
+        F.round(F.sum("line_amount"), 2).cast("double").alias("partial_total"),
+        F.max(F.coalesce(stock == "DOT", F.lit(False))).alias("__dot"),
+        F.max(F.coalesce((F.col("UnitPrice") > 0) & ~F.col("__accounting"), F.lit(False))).alias("__priced"),
+    )
+    channel = (F.when(F.col("customer_ids") > 0, "identified").when(F.col("__dot"), "retail_web")
+               .when(F.col("__priced"), "retail_other").otherwise("internal"))
+    eligible = (
+        ~F.col("invoice_key").startswith("C") & (F.col("invalid_lines") == 0)
+        & (F.col("customer_ids") <= 1) & (F.col("countries") == 1) & (F.col("invoice_days") == 1)
+    )
+    orders = (
+        orders.withColumn("channel", channel)
+        .withColumn("__group", F.when(F.col("channel") == "identified", "identified")
+                    .when(F.col("channel").isin("retail_web", "retail_other"), "retail"))
+        .withColumn("eligible", eligible)
+        .withColumn("order_total", F.when(eligible, F.col("partial_total")))
+    )
+    log_total = F.log(F.col("order_total"))
+    reference = orders.filter(F.col("eligible") & (F.col("order_total") > 0) & F.col("__group").isNotNull())
+    customer_reference = reference.filter(F.col("__group") == "identified")
+    orders = (
+        orders.join(robust_baseline(customer_reference, ["customer_key"], log_total, "__o1"), "customer_key", "left")
+        .join(robust_baseline(reference, ["__group"], log_total, "__o2"), "__group", "left")
+    )
+    use_customer = (F.col("__group") == "identified") & (F.col("__o1_n") >= MIN_CUSTOMER_INVOICES)
+    use_channel = F.col("__o2_n") >= min_samples
+    pick = lambda first, second: F.when(use_customer, first).when(use_channel, second)
+    level = pick(F.lit("customer"), F.lit("channel"))
+    median, mad = pick(F.col("__o1_med"), F.col("__o2_med")), pick(F.col("__o1_mad"), F.col("__o2_mad"))
+    z, exceeds, fold = _deviation(log_total, median, mad, z_threshold, two_sided=False)
+    expected = F.round(F.exp(median), 6)
+    reason = (
+        F.when(F.col("invoice_key").startswith("C"), "cancelled_invoice")
+        .when(F.col("invalid_lines") > 0, "invalid_invoice_lines")
+        .when(F.col("customer_ids") > 1, "multiple_customer_ids")
+        .when(F.col("countries") != 1, "inconsistent_country")
+        .when(F.col("invoice_days") != 1, "inconsistent_invoice_date")
+        .when(F.col("__group").isNull() | (F.col("order_total") <= 0), "outside_scope")
+        .when(level.isNull(), "insufficient_history")
+    )
+    flagged = reason.isNull() & exceeds & (fold >= ORDER_MIN_FOLD)
+    value = F.round(F.col("order_total") - expected, 2)
+    return orders.select(
+        "invoice_key", "channel", "customer_key", "line_count", "invalid_lines", "customer_ids",
+        "countries", "invoice_days", "eligible", "order_total", reason.alias("reason"),
+        F.when(reason.isNull(), level).alias("context_level"),
+        F.when(reason.isNull(), pick(F.col("__o1_n"), F.col("__o2_n"))).cast("long").alias("reference_count"),
+        F.when(reason.isNull(), expected).alias("reference_median"),
+        F.when(reason.isNull(), mad).alias("reference_mad"),
+        F.when(reason.isNull(), z).alias("robust_z"),
+        F.when(reason.isNull(), fold).alias("fold_change"),
+        F.when(reason.isNull(), value).alias("value_at_risk"),
+        F.when(flagged, _severity_from_value(value)).alias("severity"),
+        F.lit("GBP").alias("currency"),
+        F.lit(z_threshold).cast("double").alias("z_threshold"),
+        F.lit(run_date).cast("date").alias("run_date"),
+        F.lit(REFERENCE_MODE).alias("reference_mode"),
+        F.when(reason.isNotNull(), "not_assessable").when(flagged, "flagged")
+        .otherwise("not_flagged").alias("status"),
+    )
+
+
 def _rules_with(checks: str, tier: str) -> Column:
     return F.transform(
         F.filter(checks, lambda check: (check.tier == tier) & (check.status == "flagged")),

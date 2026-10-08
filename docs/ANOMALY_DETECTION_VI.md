@@ -216,7 +216,7 @@ Một dòng chỉ bị flag khi thỏa **cả** điều kiện thống kê **và
 | `manual_accounting_entry` | point | bút toán | — | luôn, severity high | \|line_value\| |
 | `unmatched_return` | collective | dòng hủy có ID, không phải mã phí/đặc biệt, sau 30 ngày đầu của lịch sử | tổng theo khách × mã | \|Σ Qty hủy\| > Σ Qty mua | \|line_value\| |
 
-Cấp hóa đơn: `order_value_deviation` so tổng hóa đơn đủ điều kiện với baseline khách (≥ 5 hóa đơn) → kênh (≥ 30 hóa đơn trong nhóm identified hoặc retail); flag khi z > 3.5 và fold ≥ 3.
+Cấp hóa đơn (`assess_orders`, output `order_assessments`/`flagged_orders`): so tổng hóa đơn đủ điều kiện với baseline khách (≥ 5 hóa đơn) → kênh (≥ 30 hóa đơn trong nhóm identified hoặc retail); flag khi z > 3.5 và fold ≥ 3. Hóa đơn kênh `internal` (bút toán, kiểm kho) có reason `outside_scope`.
 
 `unmatched_return` loại hai trường hợp theo bằng chứng E8: hủy mã phí/đặc biệt (Manual, POSTAGE, Discount…) là hoàn phí chứ không phải trả hàng (`service_or_special_code`); hủy trong 30 ngày đầu của lịch sử có thể ứng với hàng mua trước khi dữ liệu bắt đầu (`history_window_start`).
 
@@ -239,6 +239,7 @@ Severity theo value_at_risk: high ≥ 1,000 GBP, medium ≥ 100 GBP, còn lại 
 | 4 | `robust_baseline` (median/MAD chính xác trên log), `quantity_deviation`, `price_deviation` | Cấp baseline khách × mã → khách → kênh × mã; MAD = 0 do ngưỡng trọng yếu quyết định; identified không bao giờ dùng baseline lẻ | `test_quantity_hierarchy_levels`, `test_price_deviation_zero_mad_and_direction`, `test_identified_never_uses_retail_baseline` → pass; suite 12 passed |
 | 5 | `BUSINESS_RULES`, `add_operational_checks`: giá 0, kiểm kho, bút toán, hủy vượt mua | value_at_risk ước tính bằng giá bán trung vị của mã; `unmatched_return` loại mã phí và 30 ngày đầu | `test_operational_rules_value_at_risk`, `test_unmatched_return_collective` → pass; suite 14 passed |
 | 6 | Lắp `build_output` (14 check theo thứ tự `RULES`), `validate_output`, CLI `--z-threshold`, log theo tier/kênh/severity; bỏ IQR và rule cũ; cập nhật README | Thêm `localCheckpoint()` sau phân loại và sau deviation: một test 10 dòng giảm từ 94 s xuống 32 s, cả suite từ hơn 9 phút (kèm lỗi bộ nhớ broadcast) xuống 110 s | suite anomaly 13 passed |
+| 7 | Chuyển `assess_orders` từ `retail_pipeline.py` sang `pyspark_anomalies.py`; thay mean + 3σ toàn cục bằng baseline robust theo khách (≥ 5 hóa đơn) → kênh (≥ 30 hóa đơn, identified hoặc retail) | `retail_pipeline.run_audit` chỉ import và ghi ba output; tiêu chí eligibility và các reason cũ giữ nguyên, `insufficient_reference`/`zero_or_invalid_stddev` thay bằng `insufficient_history` | `test_order_value_customer_then_channel_baseline`, `test_assess_orders_empty_and_sparse` → pass; anomaly + pipeline + DAG + contracts 30 passed |
 
 ## 9. Kết quả chạy đầy đủ
 

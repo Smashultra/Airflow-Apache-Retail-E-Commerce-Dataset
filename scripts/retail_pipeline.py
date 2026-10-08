@@ -2,7 +2,6 @@
 
 import argparse
 import logging
-import math
 import time
 from datetime import date
 from uuid import uuid4
@@ -104,100 +103,6 @@ def customer_labels(frame, churn_days, history_days):
             "recent_low_frequency",
         )
         .otherwise("regular"),
-    )
-
-
-def assess_orders(transactions, cutoff, min_orders=30, multiplier=3.0):
-    """Assess retrospective invoice totals, rejecting invalid lines."""
-    valid = (
-        (F.col("Quantity") > 0)
-        & finite(F.col("UnitPrice"))
-        & (F.col("UnitPrice") > 0)
-        & F.col("InvoiceDate").isNotNull()
-        & (F.col("InvoiceDate") < F.lit(cutoff).cast("timestamp"))
-        & F.col("Country").isNotNull()
-        & (F.trim("Country") != "")
-    )
-    line_total = F.col("Quantity").cast("decimal(18,4)") * F.col(
-        "UnitPrice"
-    ).cast("decimal(18,4)")
-    source = (
-        transactions.withColumn("invoice_key", F.upper(F.trim("InvoiceNo")))
-        .filter(
-            F.col("invoice_key").isNotNull() & (F.col("invoice_key") != "")
-        )
-        .withColumn("valid_line", F.coalesce(valid, F.lit(False)))
-        .withColumn("line_amount", F.when(F.col("valid_line"), line_total))
-        .withColumn(
-            "customer_key",
-            F.when(F.trim("CustomerID") != "", F.trim("CustomerID")),
-        )
-    )
-    orders = source.groupBy("invoice_key").agg(
-        F.count("*").alias("line_count"),
-        F.sum((~F.col("valid_line")).cast("int")).alias("invalid_lines"),
-        F.countDistinct("customer_key").alias("customer_ids"),
-        F.countDistinct("Country").alias("countries"),
-        F.countDistinct(F.to_date("InvoiceDate")).alias("invoice_days"),
-        F.round(F.sum("line_amount"), 2).alias("partial_total"),
-    )
-    eligible = (
-        ~F.col("invoice_key").startswith("C")
-        & (F.col("invalid_lines") == 0)
-        & (F.col("customer_ids") <= 1)
-        & (F.col("countries") == 1)
-        & (F.col("invoice_days") == 1)
-    )
-    orders = (
-        orders.withColumn("eligible", eligible)
-        .withColumn("order_total", F.when(eligible, F.col("partial_total")))
-        .drop("partial_total")
-    )
-    stats = (
-        orders.filter("eligible")
-        .agg(
-            F.count("*").alias("n"),
-            F.avg("order_total").alias("mean"),
-            F.stddev_samp("order_total").alias("stddev"),
-        )
-        .first()
-    )
-    mean = float(stats["mean"]) if stats["mean"] is not None else None
-    stddev = stats["stddev"]
-    applied = (
-        stats.n >= min_orders
-        and mean is not None
-        and math.isfinite(mean)
-        and stddev is not None
-        and math.isfinite(stddev)
-        and stddev > 0
-    )
-    threshold = mean + multiplier * stddev if applied else None
-    reason = (
-        F.when(F.col("invoice_key").startswith("C"), "cancelled_invoice")
-        .when(F.col("invalid_lines") > 0, "invalid_invoice_lines")
-        .when(F.col("customer_ids") > 1, "multiple_customer_ids")
-        .when(F.col("countries") != 1, "inconsistent_country")
-        .when(F.col("invoice_days") != 1, "inconsistent_invoice_date")
-        .when(F.lit(stats.n < min_orders), "insufficient_reference")
-        .when(F.lit(not applied), "zero_or_invalid_stddev")
-    )
-    return (
-        orders.withColumn("reason", reason)
-        .withColumn("reference_n", F.lit(stats.n))
-        .withColumn("reference_mean", F.lit(mean).cast("double"))
-        .withColumn("reference_stddev", F.lit(stddev).cast("double"))
-        .withColumn("upper_bound", F.lit(threshold).cast("double"))
-        .withColumn("currency", F.lit("GBP"))
-        .withColumn("multiplier", F.lit(multiplier))
-        .withColumn("run_date", F.lit(cutoff).cast("date"))
-        .withColumn("reference_mode", F.lit("retrospective_before_run_date"))
-        .withColumn(
-            "status",
-            F.when(F.col("reason").isNotNull(), "not_assessable")
-            .when(F.col("order_total") > F.col("upper_bound"), "flagged")
-            .otherwise("not_flagged"),
-        )
     )
 
 
@@ -336,7 +241,7 @@ def run_rfm(spark, context, output, root):
 
 
 def run_audit(spark, context, output, root):
-    from pyspark_anomalies import build_output, validate_output
+    from pyspark_anomalies import assess_orders, build_output, validate_output
 
     etl = load_stage(root, context, "etl")
     source = spark.read.parquet(
