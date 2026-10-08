@@ -41,7 +41,7 @@ Open <http://localhost:8080> and use the credentials from `.env`.
 docker compose ps
 docker compose exec airflow-scheduler airflow dags list
 docker compose exec airflow-scheduler spark-submit --version
-docker compose exec airflow-scheduler python -m pytest -q tests/test_retail_contracts.py tests/test_retail_dag.py tests/test_retail_pipeline.py tests/test_pyspark_clean.py tests/test_pyspark_rfm.py tests/test_pyspark_anomalies.py
+docker compose exec airflow-scheduler python -m pytest -q tests/test_retail_contracts.py tests/test_retail_models.py tests/test_retail_dag.py tests/test_retail_training.py tests/test_retail_pipeline.py tests/test_pyspark_clean.py tests/test_pyspark_rfm.py tests/test_pyspark_anomalies.py
 ```
 
 ## Prepare and run the official DAG
@@ -65,6 +65,38 @@ represent days with no transactions. A committed source version is immutable;
 repeating preparation with unchanged source is safe. Changed source requires a
 new `--source-version` and the corresponding DAG parameter.
 
+### Bootstrap the first model before daily scoring
+
+Daily runs load a saved scaler/KMeans PipelineModel; they never fit one.
+Bootstrap a committed ETL snapshot without requiring a scoring model:
+
+```powershell
+docker compose exec airflow-scheduler spark-submit --master "local[2]" --driver-memory 3g scripts/retail_training.py --bootstrap-date 2011-11-30 --run-id bootstrap_rfm_20111201
+```
+
+This preserves the original data and writes a new curated generation plus
+`data/manifests/etl/online-retail-v1/2011-12-01.json`. The final printed path is
+the committed ETL manifest. Run this command when no other Spark job is active:
+manual spark-submit does not acquire the Airflow pool.
+
+In the UI, trigger `retail_rfm_training_dag` with:
+
+| Parameter | First-model demo value |
+|---|---|
+| training_cutoff | `2011-12-01` |
+| effective_from | `2011-12-02` |
+| source_version | `online-retail-v1` |
+| etl_manifest | `null` (resolve the committed ETL index above) |
+| rfm_k | `2` (demo configuration; validate k on this training snapshot) |
+
+Wait for all three tasks to succeed. `publish_model` logs `MODEL_ACTIVATED`;
+`data/manifests/models/registry.json` lists activations and model versions.
+The full PipelineModel is under `data/models/rfm/version=<id>/pipeline/`.
+Training uses only transactions before its cutoff. Model effectiveness dates
+in 2011 are simulated for this historical dataset, not actual deployment dates.
+
+### Run daily scoring
+
 Open <http://localhost:8080>, select `ecommerce_etl_dag`, enable it, and choose
 **Trigger DAG**. Set:
 
@@ -72,7 +104,8 @@ Open <http://localhost:8080>, select `ecommerce_etl_dag`, enable it, and choose
 |---|---|
 | business_date | `2011-12-09` |
 | source_version | `online-retail-v1` |
-| rfm_k | `2` |
+| model_version | `null` (resolve by cutoff) or the eligible model ID |
+| rfm_k | `null` (read k from model; an explicit value must match) |
 | churn_days | `90` |
 
 The exclusive cutoff is `2011-12-10`. Manual runs require an explicit business
@@ -97,11 +130,43 @@ output paths to locate the exact Parquet generations:
   order and flagged-order results.
 
 Each task logs its stage summary; completion logs `PIPELINE_COMPLETE`.
+Customer rows include model_version, feature_version and score_reference_mode.
+Daily rank scores still depend on the current customer population; fixed
+centroids do not freeze rule thresholds or campaign membership.
 Parquet directories contain multiple parts; read a dataset root with Spark,
 not an arbitrary individual part. Legacy script commands and output paths
 remain available independently of the DAG.
 
 ## Recovery and quality checks
+
+Training is monthly (`0 0 1 * *`, UTC) and uses the ETL cutoff at the interval
+end. If that snapshot is not committed yet, training fails clearly: rerun after
+ETL finishes. Daily continues on its previously activated eligible model.
+Training does not wait for daily scoring/completion and does not trigger daily.
+Both DAGs use the same one-slot `retail_spark` pool. Keep historical DAGs paused
+outside explicit demos/backfills; the last monthly interval ends 2011-12-01.
+
+Daily freezes model URI/hash/activation in its context. Retry or clear cannot
+silently switch models, even after a newer activation. Changing model/source/k
+or business code requires a new run. Training pins its ETL generation too.
+Missing/corrupt/incompatible artifacts fail closed; no automatic fit/fallback.
+Dates before the first eligible model are rejected rather than scored with a
+future model. Backfill a new date only with training_cutoff < daily cutoff and
+effective_from <= daily cutoff; replay an existing run uses its frozen binding.
+
+Model publication appends an activation to a single atomically replaced
+registry JSON under an exclusive lock; artifacts stay immutable. A failed
+training/publication leaves the serving registry unchanged. After a model is
+published, retraining it requires a new run; clearing only publication is
+idempotent. To score with an older eligible version, create a new daily run
+with explicit model_version. This is an explicit per-run rollback, not an
+automatic rewrite of activation history.
+
+Inspect active writers before removing a stale
+`data/manifests/models/.registry.lock` after a crash. Do not edit model artifacts
+or hashes to bypass validation. Old daily contexts from before this code change
+cannot be resumed because the business-code fingerprint changed; preserve their
+outputs and create new runs.
 
 A missing source manifest waits up to 30 minutes; a committed but invalid
 manifest/file fails immediately. Spark retries once with backoff. Clear the

@@ -1,6 +1,6 @@
 # Thiết kế DAG bán lẻ: Airflow điều phối, PySpark xử lý
 
-Ngày thiết kế: 28/09/2026. DAG chính thức đã được triển khai; xem [kết quả triển khai](IMPLEMENTATION_VI.md) để phân biệt phần đã kiểm chứng và phần còn giới hạn. Các mục dưới giữ lý do lựa chọn và kế hoạch nghiệm thu để truy vết.
+Ngày thiết kế: 28/09/2026; cập nhật và triển khai 06/10/2026: tách daily scoring và training định kỳ. **Daily nạp model đã lưu; DAG training riêng thực hiện fit.** Giữ sáu task daily, ETL/audit và context/manifest; thêm một DAG training, không viết lại pipeline dữ liệu. Xem [kết quả triển khai](IMPLEMENTATION_VI.md) để phân biệt kiểm thử fixture, import DAG và scheduler run trên dữ liệu thật.
 
 Tài liệu dựa trên `airflow_subject.docx`, sách *Data Pipelines with Apache Airflow — Orchestration for Data and AI, Second Edition* của Julian de Ruiter, Ismael Cabral, Kris Geusebroek, Daniel van der Ende và Bas Harenslak, cùng code hiện tại của repository. Sách là căn cứ về kỹ thuật điều phối; các ngưỡng kinh doanh và cấu hình tài nguyên dưới đây là lựa chọn của project, không gán cho tác giả sách.
 
@@ -50,6 +50,8 @@ Mâu thuẫn phạm vi đã được giải quyết: Kafka/Flume, streaming prod
 | R18 | Rubric mới 25/25/25/15/10 | Mục 18 | Checklist đủ 5 nhóm; Sensor/deadline/PEP8 có bằng chứng |
 
 ## 2. Đánh giá code hiện tại và khoảng cách cần bổ sung
+
+Bảng dưới ghi baseline lúc thiết kế 28/09; các phần đó đã được triển khai theo IMPLEMENTATION_VI.md. Delta ngày 06/10 chỉ gồm: tách fit/transform trong `pyspark_rfm.py`, bổ sung model contract trong `retail_contracts.py`/`retail_pipeline.py`, thêm DAG training và tests tương ứng. Mục 6.1–6.3, 9.3, 11.5 và 16.1 quy định thiết kế mới.
 
 | Thành phần | Hiện tại đã có | Cần thay đổi để đạt thiết kế |
 |---|---|---|
@@ -157,7 +159,7 @@ Một lịch đã kết thúc năm 2011 **không tự sinh dữ liệu mới nă
 
 Chạy manual bắt buộc truyền `business_date` hợp lệ; `validate_raw_data` tạo D/C từ tham số đó. Scheduled/backfill dùng interval của timetable, bắt buộc dài một ngày, mốc 00:00; từ chối business_date override không khớp. Không giả định logical_date do người dùng truyền luôn đồng nhất data_interval của manual run. [Dag Runs 3.3.1](https://airflow.apache.org/docs/apache-airflow/3.3.1/core-concepts/dag-run.html).
 
-Params khác: `rfm_k >= 2`, `churn_days >= 1`, `source_version`, `rule_version`; root storage/đường dẫn script cấu hình cố định, không cho nhập tùy ý từ UI. Validate lại trong task trước Spark. Không dùng các giá trị người dùng để ghép shell.
+Params daily: `churn_days >= 1`, `source_version`, `rule_version`, tùy chọn `model_version` để pin phiên bản hợp lệ. `rfm_k` chuyển sang training; nếu giữ Param daily để tương thích thì chỉ dùng kiểm tra khớp k trong model manifest, không cho thay đổi model khi scoring. Root storage/đường dẫn script cấu hình cố định, không cho nhập tùy ý từ UI. Validate lại trong task trước Spark. Không dùng các giá trị người dùng để ghép shell.
 
 ### 5.3 Từ một CSV Kaggle thành landing theo ngày
 
@@ -182,7 +184,7 @@ Lý do: RFM là chỉ số tích lũy, code hiện có đã dùng toàn bộ l�
 
 Giai đoạn mở rộng: ETL chỉ xử lý partition mới hoặc bị sửa; duy trì ledger partition đã commit, bổ sung dependency về completeness của lịch sử; tái tính affected month và các snapshot từ ngày bị sửa trở đi. Không chuyển sang append hằng ngày mà giữ nguyên tuyên bố idempotent.
 
-## 6. Đồ thị 6 task và điều kiện chạy
+## 6. DAG daily: giữ đồ thị 6 task và điều kiện chạy
 
 ```mermaid
 flowchart TD
@@ -194,9 +196,44 @@ flowchart TD
     A --> N
 ```
 
+`compute_rfm_metrics` tính RFM tích lũy rồi **load + transform**, không fit scaler/KMeans. Mỗi daily run pin một model version; training không phải upstream task của daily.
+
 Quan hệ `E >> [R, A]` là **fan-out**, không phải BranchPythonOperator chọn một nhánh. Cả R và A đều bắt buộc; chúng không có cạnh phụ thuộc lẫn nhau. N là fan-in, chỉ chạy khi cả hai thành công. `[B6]` tr. 112–114, 128–131.
 
 Callbacks ghi sự kiện lỗi/retry là cấu hình trên task/DAG, không thêm node leaf `all_done`. Lý do: leaf báo thành công bất chấp lỗi upstream có thể làm trạng thái cả DagRun sai. [Quy tắc trạng thái DagRun](https://airflow.apache.org/docs/apache-airflow/3.3.1/core-concepts/dag-run.html).
+
+### 6.1 DAG training bổ sung
+
+`dag_id=retail_rfm_training_dag`, lịch đích `CronDataIntervalTimetable("0 0 1 * *", timezone="UTC")`, `catchup=False`, `max_active_runs=1`, tạo ở trạng thái paused. Mọi Spark task của cả hai DAG dùng chung pool `retail_spark` một slot. Lịch tháng là lựa chọn khởi đầu; không tự fit lại khi daily thất bại. Demo historical dùng manual dates/manifest xác định, không lấy ngày hệ thống 2026 làm cutoff.
+
+```mermaid
+flowchart LR
+    E[(ETL manifest đã commit)] --> V[validate_training_input]
+    V --> T[train_rfm_model: SparkSubmitOperator]
+    T --> P[publish_model: PythonOperator]
+    P --> M[(Model artifact và activation manifest)]
+    M -. pin phiên bản khi tạo context .-> D[DAG daily: compute_rfm_metrics]
+```
+
+| Task | Trách nhiệm | Retry / timeout |
+|---|---|---|
+| `validate_training_input` | PythonOperator đọc metadata nhỏ; pin ETL manifest/hash, cutoff, source, feature version và k; thiếu snapshot thì fail rõ | 0 / 2 phút |
+| `train_rfm_model` | Đọc transactions của ETL đã commit; dùng lại `select_history`/`compute_rfm`; fit scaler + KMeans, kiểm tra, save/load round-trip, ghi candidate summary | 1 / 30 phút, pool retail_spark |
+| `publish_model` | `all_success`; kiểm tra candidate/context/hash, đăng ký model immutable và mốc hiệu lực bằng atomic manifest | 1 / 2 phút |
+
+Training đọc **ETL snapshot đã commit**, không cần completion manifest của daily hoặc kết quả scoring. Cách này tái sử dụng hàm tính RFM, tránh thêm task/bảng RFM trung gian chỉ để nối hai DAG. Không truyền DataFrame qua XCom và không chờ daily thành công toàn bộ. ETL đổi sau khi training pin input thì không được tự chuyển sang generation khác.
+
+Scheduled training lấy `training_cutoff = data_interval_end`, yêu cầu ETL snapshot đúng cutoff đó; snapshot chưa sẵn sàng thì lượt training thất bại có thể chạy lại sau khi ETL hoàn tất, model đang dùng vẫn giữ nguyên. Manual training bắt buộc chỉ định cutoff và ETL manifest thuộc root tin cậy. Không dùng `ExternalTaskSensor` ghép logical date daily với monthly; không tự trigger qua lại. Giữ k đã được chọn bằng dữ liệu đến training cutoff; thay k là một model version mới cần đánh giá.
+
+### 6.2 Không chờ nhau và khởi tạo model đầu tiên
+
+Daily chọn model đã có hiệu lực trước khi bắt đầu xử lý; training chỉ công bố model cho lượt daily tương lai. Ví dụ snapshot ETL cutoff 01/02/2011 được dùng huấn luyện v2; v2 có thể được đặt hiệu lực từ cutoff 02/02/2011, không thay model của lượt 01/02 đã pin v1. Training lỗi không chặn daily khi còn model hợp lệ.
+
+Bootstrap v1 thực hiện ngoài daily: chuẩn bị landing, chạy ETL-only qua helper/CLI tái sử dụng `run_clean` với context bootstrap riêng (không yêu cầu model), rồi chạy training từ ETL manifest đó. Đăng ký v1 trước khi bật daily. Không bắt daily thiếu model phải thành công để tạo dữ liệu huấn luyện; không âm thầm fit trong daily để chữa thiếu model. Context bootstrap/training được phân loại riêng, không giả lập một daily completion thành công.
+
+### 6.3 Giới hạn lịch sử và Marketing
+
+Model cố định giữ cách phân chia không gian đặc trưng trong một phiên bản; khách hàng vẫn chuyển cụm khi R/F/M thay đổi. ID cụm chỉ có nghĩa cùng `model_version`; không so trực tiếp Cluster 0 của hai model. Giữ rank-based business rules hiện có để giảm phạm vi, nhưng chúng là nhãn tương đối hằng ngày (mục 9.2), không cam kết cố định ngưỡng tiền hoặc tập khách của chiến dịch. Chiến dịch cần giữ cohort/model riêng; đóng băng ngưỡng R/F/M hoặc quản lý campaign nằm ngoài delta này.
 
 ## 7. Đặc tả từng task
 
@@ -232,6 +269,9 @@ Input: ngữ cảnh DagRun, Params, source manifest. Output XCom `return_value` 
   "run_key": "<sha256-dag_id-and-run_id>",
   "source_manifest": "/opt/airflow/data/raw/landing/source_version=<S>/manifest.json",
   "rfm_k": 2,
+  "model_version": "<immutable-model-id>",
+  "model_manifest_hash": "<sha256-model-manifest>",
+  "feature_version": "rfm-log1p-standard-v1",
   "churn_days": 90
 }
 ```
@@ -243,6 +283,7 @@ Task kiểm tra:
 - File CSV mỗi ngày > 0 byte; có header đủ 8 cột, không trùng cột; đúng delimiter và encoding đã chốt. Header-only chỉ được chấp nhận nếu manifest ghi ngày rỗng hợp lệ.
 - Stat size khớp manifest, không còn trạng thái nguồn đang viết. Full checksum/record-level checks do Spark hoặc bootstrap chịu trách nhiệm, không quét toàn CSV trong PythonOperator.
 - Connection/pool phải có trong preflight môi trường; lỗi cấu hình không đẩy job sang YARN mặc định khi conn_id sai.
+- Resolve model theo mục 11.5 rồi đóng băng URI/version/manifest hash trong context. Sensor chỉ kiểm tra metadata, không load Spark model; thiếu model hợp lệ thì fail rõ, không đợi training vô hạn. Retry/clear validation dùng context cũ nếu cùng run và identity; muốn đổi model phải tạo run mới.
 
 Contract triển khai lớp sensor: resolve/validate ngày và source version trước khi chờ; xác định filepath dưới root tin cậy; gọi `super().execute(context)` với `mode="reschedule"`, `poke_interval=60`, `timeout=1800`, `soft_fail=False`, `deferrable=False`. Chỉ sau khi super hoàn tất mới gọi helper kiểm tra manifest/header/size và return metadata cho XCom. Khi chưa có manifest, cơ chế reschedule trả worker slot cho task khác; helper kiểm tra không được chạy sớm và không bắt AirflowRescheduleException để biến thành success. `fs_conn_id="retail_landing"`, connection type File (path), extra path `/opt/airflow/data/raw/landing`.
 
@@ -258,9 +299,9 @@ CLI đã triển khai dùng `--pipeline-context <context.json>` thay cho nhiều
 
 ### 7.4 compute_rfm_metrics
 
-Gọi `pyspark_rfm.py`, đọc RFM-ready snapshot được ETL manifest trỏ đến. Tính RFM, điểm số, nhãn business, inactivity flag và KMeans; ghi dữ liệu cùng cluster profile và summary. Cutoff, k và churn_days lấy từ `--pipeline-context`; từng nhánh không tự suy ra ngày.
+Gọi `pyspark_rfm.py`, đọc RFM-ready snapshot được ETL manifest trỏ đến. Tính RFM, điểm số, nhãn business, inactivity flag; kiểm tra artifact hash, nạp PipelineModel đã pin và gọi `transform` để gán Cluster. Ghi dữ liệu cùng cluster profile của ngày và summary. Cutoff, model version và churn_days lấy từ `--pipeline-context`; k lấy từ model manifest, từng nhánh không tự suy ra ngày hoặc fit lại model.
 
-Nếu không đủ khách hàng/vector để fit k: fail với thông báo rõ, không tự giảm k mà không ghi nhận. Trong demo chọn ngày đủ lịch sử, ví dụ 07–09/12/2011. Không lấy k của tương lai để tuyên bố mô hình đã được tối ưu cho các ngày quá khứ.
+Daily có ít khách hơn k hoặc không có khách ở một số cụm vẫn scoring hợp lệ. Điều kiện đủ khách/vector và đủ k cụm thuộc training; daily chỉ cần lịch sử hợp lệ, mỗi khách có Cluster trong `[0,k)`. Demo 07–09/12/2011 phải dùng model đã huấn luyện từ cutoff trước đó; không dùng kết quả chọn k ngày 10/12 để tuyên bố đánh giá past-only.
 
 ### 7.5 detect_anomalies
 
@@ -277,7 +318,7 @@ Chọn PythonOperator ghi summary vì đáp ứng đúng lựa chọn “logs wo
 
 Task chỉ đọc JSON summary nhỏ của ETL/RFM/audit, không mở Parquet bằng pandas hoặc tạo SparkSession mới. Kiểm tra cùng run_key/C/source/rule, manifest hợp lệ, counters reconcile; ghi completion manifest và structured log. Nếu thiếu summary hoặc version lệch thì fail, không in “success”.
 
-Summary bắt buộc: dag_id, run_id, business_date, cutoff, source/rule/code versions, input/dedup/clean/reject counts, customer count, segment/churn counts, order evaluated/flagged/not-assessable counts, row flagged count, thời gian từng job, output URIs. Nêu rõ mẫu số của mỗi tỷ lệ.
+Summary bắt buộc: dag_id, run_id, business_date, cutoff, source/rule/code versions, model_version/model_manifest_hash/feature_version, input/dedup/clean/reject counts, customer count, segment/churn counts, order evaluated/flagged/not-assessable counts, row flagged count, thời gian từng job, output URIs. Nhánh RFM phải khớp model đã pin trong context. Nêu rõ mẫu số của mỗi tỷ lệ.
 
 Nếu sau này dùng email, tách transport khỏi Spark job, lấy credential qua Connection, ghi notification key để giảm gửi trùng; không tuyên bố exactly-once khi nhà cung cấp không hỗ trợ. Không gửi thông báo tới người khác trong lượt thiết kế này. `[B3]` tr. 63–65; `[B15]` tr. 417–418.
 
@@ -341,11 +382,11 @@ Giữ `percent_rank` hiện tại: Recency order giảm dần để gần đây 
 
 ### 9.3 KMeans và nhãn business
 
-Giữ pipeline log1p(R,F,M) → StandardScaler → KMeans, seed=42. K là cấu hình đã chọn offline; không chạy grid k=2..10 mỗi ngày.
+Giữ pipeline log1p(R,F,M) → StandardScaler → KMeans, seed=42. **Chỉ DAG training gọi fit.** Lưu cả PipelineModel chứa VectorAssembler, StandardScalerModel và KMeansModel; daily chạy cùng phép log1p/thứ tự R,F,M rồi gọi model.transform. Không chỉ lưu centroids hoặc fit lại scaler hằng ngày. Feature version phải mô tả phép log1p, thứ tự cột, kiểu dữ liệu và cumulative history; không đổi sang rolling window chỉ ở một DAG. K là cấu hình đã chọn offline; không chạy grid k=2..10 mỗi ngày/tháng nếu không có yêu cầu đánh giá lại.
 
-`data/analytics/k_selection/2011-12-10/k_scores.csv` hiện có silhouette k=2 khoảng 0,624; k=4 khoảng 0,492. **Đề xuất k=2 cho demo cutoff 10/12 dựa trên chỉ số này**, không tuyên bố tối ưu kinh doanh; phải kèm biểu đồ elbow, số khách/cụm và centroid trước khi chốt. `--k 4` từng được hướng dẫn chỉ là chạy thử.
+`data/analytics/k_selection/2011-12-10/k_scores.csv` hiện có silhouette k=2 khoảng 0,624; k=4 khoảng 0,492. Đây là bằng chứng EDA của baseline tại cutoff 10/12, không dùng để lựa chọn model cho daily trước hoặc bằng cutoff đó theo contract mới. Demo hai DAG phải chọn k bằng snapshot training sớm hơn ngày scoring, kèm elbow, số khách/cụm và centroid; không tuyên bố tối ưu kinh doanh. `--k 4` từng được hướng dẫn chỉ là chạy thử.
 
-Cluster là ID tùy ý, không dùng `Cluster==0` làm high-value. Lưu cluster profiles (size, median R/F/M, centroid, model config) và fit metadata theo ngày. Seed không bảo đảm byte-identical giữa phiên bản Spark/partitioning khác nhau; test phải so assignment theo dữ liệu ổn định hoặc so cụm sau căn chỉnh centroid.
+Cluster là ID tùy ý, không dùng `Cluster==0` làm high-value. Lưu centroid/scaler/config và training profile theo model version; daily giữ cluster profile size/mean R/F/M hiện có để giảm sửa code. Median là mở rộng, không phải output đã có. Seed không bảo đảm byte-identical giữa phiên bản Spark/partitioning khác nhau; test phải so assignment theo dữ liệu ổn định hoặc so cụm sau căn chỉnh centroid.
 
 Để marketing đọc được, bổ sung rule labels độc lập với Cluster, đề xuất `segment_rule_version=rfm-rule-v1`, xét theo thứ tự:
 
@@ -357,7 +398,7 @@ Cluster là ID tùy ý, không dùng `Cluster==0` làm high-value. Lưu cluster 
 | 4 | recent_low_frequency | `R_score >= 4` và `F_score <= 2` |
 | 5 | regular | Các khách còn lại |
 
-Thêm boolean `is_high_value = M_score >= 4` để khách giá trị cao nhưng chưa đủ cả F/R vẫn được nhận diện. Đây là **quy tắc đề xuất của nhóm**, không phải luật trong sách Airflow và chưa được xác thực bằng marketing outcomes.
+Thêm boolean `is_high_value = M_score >= 4` để khách giá trị cao nhưng chưa đủ cả F/R vẫn được nhận diện. Đây là **quy tắc đề xuất của nhóm**, không phải luật trong sách Airflow và chưa được xác thực bằng marketing outcomes. `percent_rank` được tính lại mỗi ngày: cùng Monetary có thể đổi M_score dù model giữ nguyên. Giữ `segment_rule_version=rfm-rule-v1` và bổ sung `score_reference_mode=daily_population_percent_rank`; không gọi đây là ngưỡng Marketing đóng băng.
 
 ### 9.4 Churn risk có nghĩa gì ở đây
 
@@ -369,7 +410,7 @@ Ghi `observed_history_days` và `churn_threshold_days`; khi lịch sử quan sá
 
 Một dòng mỗi CustomerID: LastPurchaseDate, R/F/M, R_score/F_score/M_score, RFM_score, Cluster, segment, is_high_value, is_inactive, churn_assessment_status và các version/threshold. run_date có thể là partition column; summary luôn giữ C.
 
-Gates: ID duy nhất, R>=1, F>=1, M>=0 sau rounding, điểm trong 1..5, cutoff đúng, Cluster thuộc `[0,k)`, đủ k occupied clusters theo contract hiện tại, tổng segment count bằng customer_count. Lưu high-value/inactive counts và mẫu vài khách đã ẩn/giới hạn thông tin khi trình bày.
+Gates daily: ID duy nhất, R>=1, F>=1, M>=0 sau rounding, điểm trong 1..5, cutoff đúng, Cluster thuộc `[0,k)`, tổng segment count bằng customer_count; không yêu cầu đủ k occupied clusters. Mỗi dòng/summary mang model_version, feature_version và score_reference_mode. Gates training riêng: đủ khách/vector, đủ k cụm trên tập fit, centroid/scaler hữu hạn, feature schema đúng và save/load giữ assignment trên fixture. Lưu high-value/inactive counts và mẫu vài khách đã ẩn/giới hạn thông tin khi trình bày.
 
 ## 10. Thiết kế audit bất thường theo đúng đề
 
@@ -477,6 +518,18 @@ Backfill có giới hạn active runs riêng; không coi `max_active_runs=1` tr�
 
 Nguồn historical V1 là immutable. Nếu sửa nguồn, tạo source_version mới, không thay file trong version cũ. Một bản sửa của ngày d ảnh hưởng mọi RFM/audit snapshot C>d, vì các chỉ số/reference dùng lịch sử. Reprocess đúng dải bị ảnh hưởng; consumer pin source/rule version hoặc đọc published pointer rõ ràng. Chưa có SLA late-arrival được đề quy định; V1 không giả vờ tự giải quyết CDC.
 
+### 11.5 Model contract, hiệu lực và tái lập
+
+Bổ sung `data/models/rfm/version=<M>/pipeline/`, `model.json` và `data/manifests/models/registry.json`. Để giảm số artifact, training profile (cluster sizes, centroids, scaler statistics) nằm trong model.json; registry chứa lịch sử activation và chỉ append qua atomic replace có lock. Model/artifact immutable; dùng generation mới cho mỗi attempt, `_SUCCESS` của dữ liệu không thay thế kiểm tra model. `model.json` lưu model_version, checksum các file artifact, Spark version, feature_version, training_cutoff, source_version/hash, ETL manifest URI/hash, k/seed/config và metrics. Hash code training và code scoring được lưu riêng; không yêu cầu hai lượt có cùng hash. ETL công bố thêm index `manifests/etl/<source_version>/<C>.json` để training resolve đúng cutoff mà không cần daily completion.
+
+Activation record lưu model manifest hash, `effective_from` (cutoff daily), thời điểm đăng ký thực tế và sequence để resolve không mơ hồ. Chỉ publish sau khi mọi gate training qua; ghi atomic trên cùng filesystem, dùng lock cho registry. Không overwrite artifact/model đang phục vụ. Bản tối thiểu hỗ trợ quay về model cũ bằng `model_version` rõ ràng trong daily run mới; không sửa context cũ/lịch activation. Chưa có lệnh đổi activation mặc định để rollback toàn bộ các run tương lai.
+
+Daily chỉ chọn activation đã commit lúc đóng băng context, với `training_cutoff < run_date`, `effective_from <= run_date`, source_version tương thích và feature_version khớp. Không tự chọn model mới nhất toàn kho. Model selection và context commit phải dùng registry snapshot nhất quán; sau đó mọi retry/clear dùng URI/hash đã pin, dù registry vừa đổi. Artifact hỏng/thiếu thì fail, không tự fallback sang phiên bản khác trong cùng run. Muốn thay model phải tạo run mới.
+
+Backfill mới cần pin model hợp lệ cho cutoff hoặc resolve từ lịch activation đã đăng ký; ngày trước model đầu tiên bị từ chối. Với demo lịch sử huấn luyện thực tế năm 2026, `effective_from` năm 2011 là **mốc hiệu lực mô phỏng**, không chứng minh model đã tồn tại năm 2011. Replay một run đã có dùng context/model cũ; backfill lần đầu chỉ cam kết không dùng giao dịch sau cutoff, phải ghi rõ đây là mô phỏng. Không dùng toàn bộ dataset kết thúc 09/12/2011 để fit rồi chấm các ngày trước đó như kết quả past-only.
+
+Daily giữ full-history cumulative RFM để giảm sửa đổi. F/M có thể tăng theo thời gian làm phân bố xa tập fit; theo dõi cluster size và khoảng cách tới tâm như metrics đánh giá khi retrain, chưa tự đặt ngưỡng promotion dựa trên silhouette không được kiểm chứng. Gate kỹ thuật đạt không đồng nghĩa hiệu quả Marketing đạt. Model mới chỉ có hiệu lực từ cutoff sau training cutoff và không đổi context đang chạy.
+
 ## 12. Lỗi, retry, monitoring và backfill
 
 ### 12.1 Hành vi khi lỗi
@@ -495,7 +548,9 @@ Nguồn historical V1 là immutable. Nếu sửa nguồn, tạo source_version m
 | Notify lỗi | DAG failed nhưng dữ liệu task có thể đã hoàn tất | Sửa summary/IO, clear notify; không chạy Spark lại vô ích |
 | Kill process giữa lúc ghi | Không công bố bản ghi dở | Retry generation mới, test pointer cũ vẫn đọc được |
 | Ngày nguồn hợp lệ không có giao dịch mới | Không skip RFM | RFM vẫn tăng Recency từ lịch sử; audit có thể không có đơn mới |
-| Không có lịch sử đủ tính RFM/k | Lỗi contract rõ ràng | Chọn ngày đủ dữ liệu hoặc cấu hình phạm vi được duyệt |
+| Không có lịch sử tính RFM | Lỗi contract rõ ràng | Chọn ngày có dữ liệu hợp lệ; đủ k khách/vector chỉ là gate training |
+| Thiếu model hợp lệ / artifact hash sai | Daily failed, không fit tự động hoặc đổi model ngầm | Bootstrap/khôi phục artifact; tạo run mới nếu cần đổi model |
+| Training hoặc publication lỗi | Không đăng ký activation mới; daily tiếp tục model cũ hợp lệ | Sửa input/job, retry training; output dở không được scoring đọc |
 
 Callback lỗi/retry chỉ ghi metadata và exception đã sanitize; không đọc trực tiếp Airflow metastore từ task. Callback không sửa trạng thái task và không là điều kiện duy nhất để biết lỗi; UI/log/metrics vẫn là nguồn giám sát. Không gắn `all_done` cho notify_completion để “luôn có thông báo”. `[B6]` tr. 128–131; `[B15]` tr. 417–418.
 
@@ -641,7 +696,7 @@ Không viết test chỉ để assert lại literal từng dòng code. Test tậ
 
 | ID | Test | Kết quả phải đạt |
 |---|---|---|
-| T01 | DAG import trên image pinned | Không import error; đúng 6 ID và không có cycle |
+| T01 | DAG import trên image pinned | Daily đúng 6 ID, training đúng 3 ID theo mục 6.1; không import error/cycle |
 | T02 | Phụ thuộc | RFM/audit cùng parent ETL, không phụ thuộc nhau; notify đợi cả hai |
 | T03 | Timetable | D=09/12 interval kết thúc 10/12; end_date không tạo extra interval; không dùng năm 2026 làm cutoff |
 | T04 | Manual vs scheduled | Manual thiếu D bị từ chối; scheduled không được override sai interval |
@@ -653,7 +708,7 @@ Không viết test chỉ để assert lại literal từng dòng code. Test tậ
 | T10 | Partition | Ghi/đọc year/month đúng, biên tháng/năm, cutoff exact midnight |
 | T11 | RFM fixture | Ví dụ R=1/F=2/M=60 đúng; decimal rounding, tie score đúng |
 | T12 | Churn | R=89/90/91, lịch sử chưa đủ; high-value inactive priority không chồng nhãn |
-| T13 | KMeans | k vượt customer/vector bị fail; seed/config lưu; Cluster ID không quyết định high-value |
+| T13 | KMeans training/scoring | Training thiếu vector/khách thì fail; daily ít hơn k khách hoặc thiếu occupied cluster vẫn hợp lệ; không gọi fit khi scoring |
 | T14 | Order audit | Hai dòng riêng lẻ không lớn nhưng tổng lớn vẫn bị flag; missing ID vẫn xét |
 | T15 | Reference | n<30, sigma=0, đúng fence, trên fence; invalid line làm đơn not-assessable |
 | T16 | Audit retention | Giữ multiset row trước C/missing-date, 9 check cũ; flagged subset đúng |
@@ -669,6 +724,13 @@ Không viết test chỉ để assert lại literal từng dòng code. Test tậ
 | T26 | Deadline | Cảnh báo run quá hạn, không cảnh báo run xong sớm; backfill tính từ queued_at hiện tại |
 | T27 | Freshness và timeout | Phân biệt deadline alert với hard timeout; nhận biết queue chậm/missing run qua watchdog |
 | T28 | PEP8 và modularity | Lint code đã triển khai; không Spark/pandas/IO nặng lúc import DAG |
+| T29 | Model round-trip | PipelineModel save/load giữ assignment fixture; scaler và feature order dùng đúng bản training |
+| T30 | Model pinning | Activation đổi giữa run/retry không đổi model đã pin; sai hash/schema/version thì fail |
+| T31 | Model time boundary | Model tương lai bị từ chối; đúng effective_from được chọn; trước v1 fail; replay giữ model cũ |
+| T32 | Bootstrap và DAG independence | ETL-only → training v1 → daily thành công; training không cần daily completion; không có chờ vòng |
+| T33 | Training failure/atomicity | Candidate ghi dở không được kích hoạt; daily vẫn dùng model cũ; rollback không sửa context cũ |
+| T34 | Rank semantics | Cùng Monetary có thể đổi score khi population đổi; metadata không tuyên bố ngưỡng cố định |
+| T35 | Hai DAG dùng chung tài nguyên | Shared pool một slot chặn hai JVM đồng thời; scheduled training chỉ nhận đúng ETL cutoff |
 
 Tests fixture dùng namespace tạm, không overwrite Parquet người dùng đã tạo. Unit test Spark dùng local[2] và dữ liệu nhỏ; integration test manifest trên bind mount Windows là bắt buộc với chiến lược atomic replace. `dag.test()` là công cụ debug toàn DAG, không thay thế smoke test về concurrency/scheduler thật.
 
@@ -692,6 +754,18 @@ Không chỉ thay EmptyOperator thành SparkSubmitOperator rồi gọi là xong:
 
 Rollback triển khai: giữ DAG paused, giữ code revision trước và output legacy; consumer pointer chỉ đổi sau validation; rollback pointer về version đã xác nhận nếu cần. Không rollback bằng xóa toàn bộ data hoặc volume PostgreSQL.
 
+### 16.1 Delta triển khai tối thiểu sau cập nhật 06/10/2026
+
+Đã triển khai các bước code bên dưới; model contracts được đặt trong `retail_models.py`, training/bootstrap entry ở `retail_training.py` để giữ file orchestration nhỏ. Kiểm thử fixture/import đã chạy; scheduler smoke hai DAG trên full dataset vẫn là bước vận hành riêng theo SETUP.
+
+1. `pyspark_rfm.py`: tách `fit_rfm_model` và `apply_rfm_model`; tái sử dụng feature prep, aggregation, Window và rules. Tách validation training/daily; giữ CLI legacy có semantics rõ để không phá workflow cũ.
+2. `retail_contracts.py`: thêm model/activation manifest, safe path/hash, resolve và frozen context; phân biệt daily với bootstrap/training context. Pin k từ model, kiểm tra compatibility thay vì cho daily thay k.
+3. `retail_pipeline.py`: đổi `run_rfm` sang load/transform, thêm training entry point tái sử dụng ETL reader/compute_rfm; giữ run_clean/run_audit. Bootstrap ETL-only dùng helper hiện có, không thêm node daily.
+4. `dags/ecommerce_etl_dag.py` và helper validation: giữ sáu task/dependencies, bổ sung model binding; thêm `dags/retail_rfm_training_dag.py` với ba task mục 6.1, cùng Spark connection/pool. Không cần dịch vụ registry mới hoặc thay Compose.
+5. Chạy fixture T29–T35 và các regression liên quan; bootstrap v1 rồi smoke hai DAG trên namespace thử nghiệm. Sau khi có code/test thật mới cập nhật SETUP/IMPLEMENTATION và hình Graph; không ghi nhận kế hoạch thành tính năng đã chạy.
+
+Không đổi ETL thành incremental, không thay thuật toán audit, không thêm rolling window hay tự tìm k mỗi tháng. Phạm vi sửa ít vẫn phải bảo đảm scaler cố định, model pinning, cutoff và bootstrap đúng; đây là các điều kiện bắt buộc của việc tách fit/scoring.
+
 ## 17. Sản phẩm nộp và kịch bản thuyết trình
 
 ### 17.1 Checklist repository
@@ -699,6 +773,7 @@ Rollback triển khai: giữ DAG paused, giữ code revision trước và output
 - `docs/REPORT.md`: khái niệm mục 3, kiến trúc mục 4, công thức mục 9–10, rationale, citations, kết quả đã chạy và giới hạn.
 - `docs/SETUP.md`: Docker/WSL, RAM/disk, `.env` mẫu, build/init, tải dataset, bootstrap landing, connection/pool, chạy ngày demo, backfill, kiểm tra/stop/recovery.
 - `dags/ecommerce_etl_dag.py`: implementation 6 task, context/Params/timetable/retry và dependencies.
+- `dags/retail_rfm_training_dag.py`: ba task training đã có; bằng chứng model manifest/bootstrap/tests ở IMPLEMENTATION_VI. Không coi static pool check là thử nghiệm concurrency qua scheduler.
 - `scripts/pyspark_clean.py`, `pyspark_rfm.py`, `pyspark_anomalies.py`: compute contract đã test; helper/landing script có mô tả rõ.
 - `tests/`: fixtures nhỏ, kiểm tra logic và DAG; không commit full dataset hoặc kết quả lớn.
 - `docs/images/`: Graph, Grid/Gantt, log summary, retry/failure và output sample, che thông tin nhạy cảm.
@@ -785,4 +860,4 @@ Các mức RAM, retry/timeout, ngưỡng 90 ngày, k=2, manifest layout và mean
 
 Đã đọc yêu cầu DOCX gồm bảng và công thức, mục lục và các đoạn sách liên quan, đối chiếu code/CLI/schema hiện có; xác minh số dòng và khoảng ngày CSV bằng đọc local. Đã kiểm tra cú pháp khung Python, link nội bộ, danh mục tham chiếu và whitespace khi hoàn tất tài liệu.
 
-DAG thật, CLI context/manifest, partition year/month, audit tổng đơn, nhãn inactivity, Sensor và callback đã được triển khai. Bằng chứng test/run và giới hạn nằm tại [IMPLEMENTATION_VI.md](IMPLEMENTATION_VI.md); không mặc định toàn bộ T01–T28 đã đạt chỉ vì có code.
+DAG thật, CLI context/manifest, partition year/month, audit tổng đơn, nhãn inactivity, Sensor và callback đã được triển khai ở baseline. Cập nhật 06/10/2026 đã triển khai training DAG, persisted PipelineModel và daily inference; 94 tests qua gồm 75 Spark/regression và 19 metadata/DAG tests. Airflow nhận diện hai DAG, không có import errors. Đây chưa phải scheduler smoke hai DAG trên toàn dataset hoặc kiểm thử runtime overlap; không mặc định toàn bộ T01–T35 đã nghiệm thu. Khung daily mục 14 minh họa topology; source thực tế dùng Param model_version/nullable rfm_k theo mục 5.2, 7.2 và 11.5. Chi tiết ở [IMPLEMENTATION_VI.md](IMPLEMENTATION_VI.md).

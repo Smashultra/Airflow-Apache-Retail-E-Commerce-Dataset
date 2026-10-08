@@ -2,11 +2,15 @@
 
 | Status | Task | Owner | Branch | Dependency |
 |---|---|---|---|---|
+| IN PROGRESS | Integrate origin/main 709eb68 with local training DAG; preserve upstream incremental CLI and local asset work | Codex | main (rebase) | User pull/conflict-resolution request 2026-10-11; Docker verification running |
 | DONE | Final-review fix pass for anomaly rule base | Claude | `feature/anomaly-rule-base` | 98 Docker tests passed; full-data re-run exit 0 |
 | TODO | Run DAG `detect_anomalies` end-to-end through Airflow after merge | Unassigned | - | Airflow stack initialized |
 | DONE | Two-tier anomaly rule base by record type, channel and per-customer baseline; move assess_orders into pyspark_anomalies.py; document in docs/ANOMALY_DETECTION_VI.md | Claude | `feature/anomaly-rule-base` | 94 Docker tests passed; full-data run exit 0; `.agent/plans/archive/2026-10-08-anomaly-rule-base.md` |
 | TODO | Recalibrate contextual anomaly rules (quantity-tier pricing, MAD floor, minimum value_at_risk) per docs/ANOMALY_DETECTION_VI.md section 9.3 | Unassigned | - | User approval of new constants |
 | TODO | Update handbook and DAG design docs to the two-tier anomaly rule base | Unassigned | - | Merge of `feature/anomaly-rule-base` |
+| DONE | Resolve rebase conflicts preserving upstream notes and local training/scoring | Codex | `main` (rebase) | 59 focused Docker tests passed; AST and note preservation checks passed; ready to continue rebase |
+| DONE | Implement two-DAG training/scoring, model contracts, bootstrap and focused regression | Codex | `main` | 94 tests passed; lint/import checks passed; real-data bootstrap and scheduler demo documented in SETUP |
+| DONE | Revise DAG design for daily scoring and separate versioned model training; minimal runtime migration | Codex | `main` | User request 2026-10-06; implementation tracked in the row above |
 | DONE | Match Online Retail guide image usage to anomalies/RFM guides and delete notebooks/assets at user request | Codex | `main` | No embeds or orphan captions; 12 sections/links/syntax verified; notebook hashes unchanged |
 | DONE | Convert Online Retail EDA DOCX to Markdown guide, fill missing explanations and remove source DOCX after verification | Codex | `main` | 12 sections, 9 images and CSV-backed checks passed; DOCX deleted at user request |
 | DONE | Publish complete committed local snapshot to main at user request | Codex | `initial-setup` -> `main` | Explicit destination correction 2026-10-03 |

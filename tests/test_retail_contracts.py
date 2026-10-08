@@ -80,8 +80,9 @@ def test_checksum_detects_same_size_change(landing):
         contracts.validate_landing(root, "fixture", "2011-12-09", True)
 
 
-def test_context_is_frozen_and_cutoff_is_next_day(landing):
-    root, _, _ = landing
+def test_context_is_frozen_and_cutoff_is_next_day(landing, model_factory):
+    root, _, manifest_path = landing
+    model_factory(root, contracts.read_json(manifest_path))
     params = {"source_version": "fixture", "rfm_k": 2, "churn_days": 90}
     metadata = contracts.build_context(
         root, "dag", "run", "2011-12-09", params
@@ -109,8 +110,11 @@ def test_atomic_replace_failure_preserves_published_file(
     assert contracts.read_json(target) == {"version": "old"}
 
 
-def test_publish_rejects_mixed_generations_and_missing_markers(landing):
-    root, _, _ = landing
+def test_publish_rejects_mixed_generations_and_missing_markers(
+    landing, model_factory
+):
+    root, _, manifest_path = landing
+    model_factory(root, contracts.read_json(manifest_path))
     params = {"source_version": "fixture", "rfm_k": 2, "churn_days": 90}
     meta = contracts.build_context(root, "dag", "run", "2011-12-09", params)
     context = contracts.load_context(meta["context_path"], root)
@@ -125,6 +129,8 @@ def test_publish_rejects_mixed_generations_and_missing_markers(landing):
             "outputs": {"data": output.relative_to(root).as_posix()},
             "etl_hash": contracts.json_hash(stages["etl"]) if stages else None,
         }
+        if stage == "rfm":
+            value["model"] = context["model"]
         stages[stage] = value
         contracts.atomic_json(
             contracts.stage_file(root, context, stage), value
@@ -140,3 +146,63 @@ def test_publish_rejects_mixed_generations_and_missing_markers(landing):
     (root / "test_outputs/etl/_SUCCESS").unlink()
     with pytest.raises(ValueError, match="Incomplete Parquet"):
         contracts.publish_completion(root, context)
+
+
+def test_model_binding_survives_activation_and_rejects_changed_request(
+    landing, model_factory
+):
+    root, _, path = landing
+    source = contracts.read_json(path)
+    model_factory(root, source)
+    params = {"source_version": "fixture", "churn_days": 90}
+    first = contracts.build_context(root, "dag", "one", "2011-12-09", params)
+    model_factory(root, source, "v2", "2011-12-09", "2011-12-10")
+    assert contracts.build_context(
+        root, "dag", "one", "2011-12-09", params
+    ) == first
+    second = contracts.build_context(
+        root, "dag", "two", "2011-12-09", params
+    )
+    assert second["model"]["model_version"] == "v2"
+    with pytest.raises(ValueError, match="inputs changed"):
+        contracts.build_context(
+            root, "dag", "one", "2011-12-09",
+            {**params, "model_version": "v2"},
+        )
+    with pytest.raises(ValueError, match="must match"):
+        contracts.build_context(
+            root, "dag", "wrong-k", "2011-12-09", {**params, "rfm_k": 3}
+        )
+
+
+def test_bootstrap_needs_no_model_but_daily_rejects_future_model(
+    landing, model_factory
+):
+    root, _, path = landing
+    params = {"source_version": "fixture", "churn_days": 90}
+    bootstrap = contracts.build_context(
+        root, "bootstrap", "one", "2011-12-09", params, kind="bootstrap"
+    )
+    assert "model" not in bootstrap
+    with pytest.raises(ValueError, match="No eligible model"):
+        contracts.build_context(root, "daily", "one", "2011-12-09", params)
+    model_factory(root, contracts.read_json(path), cutoff="2011-12-10",
+                  effective="2011-12-11")
+    with pytest.raises(ValueError, match="No eligible model"):
+        contracts.build_context(root, "daily", "one", "2011-12-09", params)
+
+
+def test_corrupt_model_manifest_and_incompatible_source_fail(
+    landing, model_factory
+):
+    root, _, path = landing
+    source = contracts.read_json(path)
+    binding = model_factory(root, {**source, "rows": 999})
+    params = {"source_version": "fixture", "churn_days": 90}
+    with pytest.raises(ValueError, match="No eligible model"):
+        contracts.build_context(root, "daily", "one", "2011-12-09", params)
+    manifest = contracts.safe_path(root, binding["model_manifest"])
+    model = contracts.read_json(manifest)
+    contracts.atomic_json(manifest, {**model, "k": 3})
+    with pytest.raises(ValueError, match="hash mismatch"):
+        contracts.build_context(root, "daily", "one", "2011-12-09", params)

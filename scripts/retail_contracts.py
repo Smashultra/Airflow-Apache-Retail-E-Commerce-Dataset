@@ -102,8 +102,11 @@ def code_version():
     names = [
         "retail_contracts.py",
         "retail_pipeline.py",
+        "retail_models.py",
+        "retail_training.py",
         "pyspark_clean.py",
         "pyspark_rfm.py",
+        "train_rfm_kmeans.py",
         "pyspark_anomalies.py",
     ]
     return json_hash({name: digest(directory / name) for name in names})
@@ -153,17 +156,29 @@ def context_file(root, run_key):
     return safe_path(root, f"manifests/runs/{run_key}/context.json")
 
 
-def build_context(root, dag_id, run_id, business_date, params):
+def build_context(
+    root, dag_id, run_id, business_date, params, *, kind="daily"
+):
+    from retail_models import (
+        FEATURE_VERSION,
+        registry_lock,
+        resolve_model,
+        validate_binding,
+    )
+
+    if kind not in {"daily", "bootstrap"}:
+        raise ValueError("Unknown context kind")
     version = token(params["source_version"])
     source, _ = validate_landing(root, version, business_date)
-    k, churn = params["rfm_k"], params["churn_days"]
-    if type(k) is not int or not 2 <= k <= 20:
+    k, churn = params.get("rfm_k"), params["churn_days"]
+    if k is not None and (type(k) is not int or not 2 <= k <= 20):
         raise ValueError("rfm_k must be an integer between 2 and 20")
     if type(churn) is not int or not 1 <= churn <= 3650:
         raise ValueError("churn_days must be an integer between 1 and 3650")
     run_key = json_hash([dag_id, run_id])
     context = {
         "schema_version": SCHEMA_VERSION,
+        "kind": kind,
         "dag_id": dag_id,
         "run_id": run_id,
         "run_key": run_key,
@@ -173,14 +188,44 @@ def build_context(root, dag_id, run_id, business_date, params):
         "source_hash": json_hash(source),
         "rule_version": RULE_VERSION,
         "code_version": code_version(),
-        "rfm_k": k,
+        "requested_k": k,
+        "requested_model": params.get("model_version"),
+        "feature_version": FEATURE_VERSION,
         "churn_days": churn,
         "first_date": source["first_date"],
     }
     path = context_file(root, run_key)
-    if path.exists() and read_json(path) != context:
-        raise ValueError("Run inputs changed: create a new DagRun")
-    atomic_json(path, context)
+    with registry_lock(root):
+        if path.exists():
+            saved = read_json(path)
+            base = {
+                k: v for k, v in saved.items() if k not in {"model", "rfm_k"}
+            }
+            if base != context:
+                raise ValueError("Run inputs changed: create a new DagRun")
+            context = saved
+        elif kind == "daily":
+            context["model"] = resolve_model(
+                root,
+                context["run_date"],
+                version,
+                context["source_hash"],
+                context["requested_model"],
+            )
+        if kind == "daily":
+            model = validate_binding(
+                root,
+                context["model"],
+                context["run_date"],
+                version,
+                context["source_hash"],
+            )
+            if k is not None and k != model["k"]:
+                raise ValueError("Daily rfm_k must match the pinned model")
+            context["rfm_k"] = model["k"]
+        else:
+            context["rfm_k"] = k or 2
+        atomic_json(path, context)
     return {"context_path": str(path), **context}
 
 
@@ -229,6 +274,10 @@ def publication_lock(root, run_date):
 def publish_completion(root, context):
     """Publish three fully written stages with consistent inputs."""
     stages = {s: load_stage(root, context, s) for s in ("etl", "rfm", "audit")}
+    if context.get("kind") != "daily":
+        raise ValueError("Only daily contexts may publish analytics")
+    if stages["rfm"].get("model") != context["model"]:
+        raise ValueError("RFM model does not match frozen context")
     etl_hash = json_hash(stages["etl"])
     if any(stages[s]["etl_hash"] != etl_hash for s in ("rfm", "audit")):
         raise ValueError(

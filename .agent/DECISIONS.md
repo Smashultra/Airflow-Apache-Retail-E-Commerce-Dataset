@@ -9,6 +9,13 @@ Use `YYYY-MM-DD HH:mm UTC+07:00` in every decision heading.
 - Decision: Classify rows (record_type) and invoices (channel) before any rule. Tier 1 data rules map to ISO/IEC 25012 / DAMA dimensions; a missing CustomerID is a channel attribute, not a data anomaly. Tier 2 business rules follow Chandola et al. (2009) point/contextual/collective types. Contextual checks use the Iglewicz-Hoaglin modified z-score (3.5) on log values with hierarchical baselines (customer x stock >= 5, customer >= 20, channel x stock >= 30; orders: customer >= 5, channel >= 30) plus materiality limits fixed in advance (quantity x3, price +-30%, order x3). Each flag carries value_at_risk and severity (high >= 1,000 GBP, medium >= 100 GBP). `assess_orders` lives in `pyspark_anomalies.py`.
 - Consequences: Output schema changed (14 ordered checks with tier/severity; `--z-threshold` replaces `--iqr-multiplier`). Low-severity contextual flags are numerous on this data (see doc 9.3). `build_output` checkpoints lineage and is eager.
 - Revisit when: the user approves recalibrated constants, labelled outcomes become available, or online scoring is required.
+## 2026-10-06 11:05 UTC+07:00 - Separate daily scoring and model training design
+
+- Status: Design and runtime implemented at the user's request; 94 tests passed, scheduler full-data two-DAG demonstration pending.
+- Decision: Preserve the six-task daily topology and cumulative ETL/audit. Add a three-task training DAG reading a committed ETL snapshot and reusing RFM aggregation; persist the full scaler/KMeans PipelineModel. Daily only transforms with a model pinned in run context.
+- Decision: Version model artifacts and activation metadata; enforce training_cutoff < scoring cutoff, feature compatibility, hash checks and frozen retry identity. Bootstrap ETL-only outside daily before training v1, avoiding circular dependencies. Both DAGs share the existing one-slot Spark pool.
+- Decision: Preserve daily percent_rank and business rules to minimize scope; explicitly disclose that rank-based thresholds and customer membership are not frozen. Daily need not occupy all k clusters; training retains fit-specific gates.
+- Consequences: No new registry service, incremental ETL, campaign system or rolling window. Registry uses a single atomic JSON with activation history; training profile lives in model.json. Explicit model_version on a new daily run provides per-run rollback; global reactivation is deferred. Historical activation dates are simulated, not evidence of deployment in 2011. T29–T35 have focused fixture/import coverage; runtime concurrency/full-data scheduler evidence remains separate.
 
 ## 2026-09-29 13:23 UTC+07:00 - Official historical DAG execution contracts
 

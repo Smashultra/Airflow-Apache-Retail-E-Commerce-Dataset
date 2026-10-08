@@ -76,7 +76,19 @@ with DAG(
             type="string",
             pattern=r"^[A-Za-z0-9_-]{1,80}$",
         ),
-        "rfm_k": Param(2, type="integer", minimum=2, maximum=20),
+        "rfm_k": Param(
+            None,
+            type=["null", "integer"],
+            minimum=2,
+            maximum=20,
+            description="Optional compatibility check; k comes from model",
+        ),
+        "model_version": Param(
+            None,
+            type=["null", "string"],
+            pattern=r"^[A-Za-z0-9_-]{1,80}$",
+            description="Pin an eligible model, or resolve by cutoff",
+        ),
         "churn_days": Param(90, type="integer", minimum=1, maximum=3650),
     },
     default_args={
@@ -92,8 +104,9 @@ with DAG(
     tags=["retail", "pyspark", "daily", "historical-demo"],
     doc_md="""
 ### Retail pipeline
-Prepare landing and the retail_spark pool first (docs/SETUP.md).
-Manual trigger: business_date=2011-12-09, rfm_k=2, churn_days=90.
+Prepare landing, pool and a trained model first (docs/SETUP.md).
+Manual trigger: business_date=2011-12-09, churn_days=90.
+Daily only applies the frozen scaler/KMeans; training runs separately.
 The exclusive analysis cutoff is 2011-12-10. The daily timetable is bounded
 to historical data: use explicit manual runs/backfills, not today's date.
 Success requires both analytics branches and the publication summary.

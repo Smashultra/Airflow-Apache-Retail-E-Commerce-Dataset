@@ -14,6 +14,8 @@ from airflow.timetables.interval import CronDataIntervalTimetable
 
 from ecommerce_etl_dag import dag
 from retail_support.tasks import LandingValidationSensor, business_date
+from retail_support.tasks import training_dates
+from retail_rfm_training_dag import dag as training_dag
 
 
 def context(run_type="manual", day="2011-12-09"):
@@ -110,3 +112,25 @@ def test_sensor_ready_validates_and_invalid_source_fails_without_retry():
     ):
         with pytest.raises(AirflowFailException, match="bad CSV"):
             sensor.execute(context())
+
+
+def test_training_topology_pool_and_monthly_dates():
+    assert len(training_dag.tasks) == 3
+    train = training_dag.get_task("train_rfm_model")
+    assert isinstance(train, SparkSubmitOperator)
+    assert train.pool == dag.get_task("compute_rfm_metrics").pool
+    assert train.upstream_task_ids == {"validate_training_input"}
+    assert train.downstream_task_ids == {"publish_model"}
+    assert training_dag.get_task("publish_model").trigger_rule == "all_success"
+    ctx = context("scheduled", None)
+    ctx["data_interval_start"] = pendulum.datetime(2011, 1, 1, tz="UTC")
+    ctx["data_interval_end"] = pendulum.datetime(2011, 2, 1, tz="UTC")
+    assert training_dates(ctx) == ("2011-02-01", "2011-02-02")
+    ctx["params"]["training_cutoff"] = "2011-02-02"
+    with pytest.raises(ValueError, match="override"):
+        training_dates(ctx)
+    with pytest.raises(ValueError, match="requires"):
+        training_dates(context())
+    ctx = context()
+    ctx["params"]["training_cutoff"] = "2011-12-01"
+    assert training_dates(ctx) == ("2011-12-01", "2011-12-02")

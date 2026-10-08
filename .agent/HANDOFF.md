@@ -27,6 +27,29 @@
 - Verification: Docker `python -m pytest -q -p no:cacheprovider tests/test_retail_contracts.py tests/test_retail_dag.py tests/test_retail_pipeline.py tests/test_pyspark_clean.py tests/test_pyspark_rfm.py tests/test_pyspark_anomalies.py tests/test_anomaly_evidence.py` -> 94 passed; host structure test passed (called directly, host has no pytest). Full-data clean + anomaly spark-submit exit 0 (252 s); 536,641 rows preserved; record_type/channel counts match independent pandas evidence exactly; 46,933 rows and 54 invoices flagged.
 - Risks: contextual rules over-flag low-value normal behaviour (83-99.7% of their flags have MAD = 0; price flags mostly quantity-tier pricing) — recalibration options in doc section 9.3 await user approval. DAG `detect_anomalies` stage not re-run end-to-end through Airflow (stack not initialized this session). Handbook and `docs/DAG_DESIGN_VI.md` still describe the old nine checks / mean + 3 sigma. Docker image was built with `--add-host` pinning PyPI to a fast CDN edge because two Fastly edges served ~40 KB/s; normal `docker compose build` works when the edges are healthy.
 - Next action: user decides on section 9.3 recalibration, then review/merge the branch.
+## Rebase conflict resolution - 2026-10-08
+
+- Owner: Codex; branch: `main` (rebase). Resolved HANDOFF/TODO by retaining entries from both sides; preserved `fit_rfm_model` plus the existing apply and legacy wrapper in scripts/pyspark_rfm.py.
+- Verification: `docker exec ecommerce-airflow-airflow-scheduler-1 python -m pytest -q -p no:cacheprovider tests/test_pyspark_rfm.py tests/test_retail_training.py` -> 59 passed in 168.78s, one upstream pandas/PySpark compatibility warning. Python AST parsing passed for all 23 source/DAG/test files; unique fit/apply/legacy functions and both sides' note entries verified. `git diff --check` passed.
+- Next action: stage the three resolved files, then continue the pending rebase and push main. This resolution task does not run rebase --continue or push. Full-data scheduler execution was not rerun.
+
+## Two-DAG code implemented and fixture-verified - 2026-10-06
+
+- User explicitly requested coding the revised design. Kept the six daily tasks and ETL/audit algorithms. Split fit/apply in pyspark_rfm, added retail_models/retail_training and a three-task retail_rfm_training_dag; daily pins model and only transforms. Legacy standalone fit-and-score remains supported.
+- Full PipelineModel artifacts and atomic registry retain scaler/centroid identity; context pins model or ETL generation across retries. Temporal/source/feature/hash gates fail closed. Bootstrap ETL-only supplies the first training snapshot without daily success. ETL publishes a small source/cutoff index. Both DAGs use the existing one-slot pool.
+- Docker Desktop was initially stopped; started it with approval, existing Compose services became healthy. Installed pinned Ruff 0.15.7 only under container /tmp/retail-lint-tools. No production model/data generations were created or deleted; Spark lifecycle tests used pytest temporary namespaces. Both DAGs remain paused.
+- Verification: Docker `python -m pytest -q tests/test_retail_contracts.py tests/test_retail_models.py tests/test_retail_dag.py` -> 19 passed in 9.03s. Docker `python -m pytest -q tests/test_retail_training.py tests/test_retail_pipeline.py tests/test_pyspark_rfm.py tests/test_pyspark_clean.py tests/test_pyspark_anomalies.py` -> 75 passed, one upstream pandas/PySpark warning, 245.82s. Lifecycle covers real Spark bootstrap/train/save/load/activation/daily/audit/publication/read-back, blocked fit during daily and one-customer scoring with k=2.
+- Ruff check dags/scripts/tests passed; formatter check for seven changed runtime/orchestration files passed. `airflow dags list-import-errors` returned No data found; list recognized both DAGs. Local AST/link checks and git diff --check passed. No scheduler full-data two-DAG run, JVM crash injection or runtime pool concurrency experiment was performed.
+- SETUP documents required first-model bootstrap and training before daily, historical eligibility, retry, missing model and stale lock recovery. IMPLEMENTATION/REPORT/design distinguish new fixture evidence from the old 29/09 full-data scheduler run. Explicit per-run model_version supports rollback; no global reactivation command, campaign cohort freeze or rolling window added.
+- Next operational action: follow SETUP to bootstrap data through 2011-11-30, train cutoff 2011-12-01, then run daily at a later eligible cutoff. Old run contexts fail current code-version checks by design; preserve outputs and start new runs. No commits/pushes. Handbook work remains separate.
+
+## Two-DAG design revision - 2026-10-06
+
+- User requested minimal changes to the DAG design following discussion of daily inference and periodic training. Updated `docs/DAG_DESIGN_VI.md` and REPORT status only; runtime code, data, environment and existing evidence were preserved.
+- Daily retains six task IDs/topology; new training design has metadata validation, Spark training and atomic model publication. Training reads committed ETL snapshots, reuses RFM aggregation and bootstraps from ETL-only execution without requiring daily completion. Full PipelineModel, version pinning, temporal eligibility, retry/backfill, model failure and shared pool contracts are specified.
+- Kept cumulative history and daily percent_rank rules, with explicit limits on Marketing stability. Removed daily occupied-k requirement and separated training gates; added planned acceptance tests T29–T35 and a minimal migration sequence.
+- Verification: `git diff --check` passed (line-ending notices only); documentation structure/relative Markdown links and changed-file scope checked. No runtime tests needed for documentation-only edits; no claim that the second DAG or inference mode is implemented.
+- Next action: implement section 16.1 if requested, then run focused regression and two-DAG bootstrap/scoring smoke tests. Existing handbook work remains separately in progress.
 
 ## Online Retail guide without embedded images - 2026-10-03
 
@@ -79,9 +102,6 @@
 - Backup: C:\Users\Lenovo\AppData\Local\Temp\retail-pull-20261003-wbqt8a4c; stash retained. Ignored datasets were not touched. Runtime tests not run for this Git synchronization.
 - Risk/next action: local RFM source/tests/helper remain the user versions and may need compatibility review with the incoming pipeline before execution.
 
-## Upstream handoff
-
-# Current Handoff
 
 ## Official DAG implemented and exercised - 2026-09-29
 

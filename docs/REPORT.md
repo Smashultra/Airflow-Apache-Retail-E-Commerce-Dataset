@@ -25,6 +25,8 @@ Bản báo cáo chi tiết bằng tiếng Việt nằm tại [Thiết kế DAG b
 
 ## Trạng thái kết quả
 
+Cập nhật 06/10/2026 đã giữ sáu task daily và chuyển KMeans sang load/transform, bổ sung DAG training ba task, model có phiên bản và bootstrap ETL-only; xem mục 6.1–6.3, 11.5 và 16.1 của [bản thiết kế](DAG_DESIGN_VI.md). 94 tests đã qua, gồm Spark lifecycle và kiểm tra metadata/DAG; Airflow import thành công cả hai DAG. Chưa chạy scheduler smoke hai DAG trên toàn dataset; bằng chứng scheduler cũ bên dưới thuộc baseline ngày 29/09.
+
 DAG chính thức đã có sáu task thực: EmptyOperator mở đầu, FileSensor mở rộng, ba SparkSubmitOperator và PythonOperator công bố kết quả. Code bổ sung partition/manifest, audit tổng đơn và nhãn inactivity. Kết quả kiểm thử và scheduler run nằm tại [IMPLEMENTATION_VI.md](IMPLEMENTATION_VI.md).
 
 Tài liệu triển khai ghi phiên bản image, lệnh/kết quả test, summary và giới hạn. Graph/Grid/Gantt và slide vẫn là phần cần chọn để hoàn thiện bài nộp; không trình bày tiêu chí kiểm thử dự kiến như kết quả đã đạt.

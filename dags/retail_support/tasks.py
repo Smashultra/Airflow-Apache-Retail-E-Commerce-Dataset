@@ -76,6 +76,76 @@ def notify_completion():
     LOGGER.info("PIPELINE_COMPLETE %s", json.dumps(summary, sort_keys=True))
 
 
+def training_dates(context):
+    """Monthly runs use interval end; manual runs require a cutoff."""
+    run_type = context["dag_run"].run_type
+    run_type = getattr(run_type, "value", run_type)
+    override = context["params"].get("training_cutoff")
+    if run_type == "manual":
+        if override is None:
+            raise ValueError("Manual training requires training_cutoff")
+        cutoff = iso_date(override)
+    else:
+        start, end = (
+            context["data_interval_start"],
+            context["data_interval_end"],
+        )
+        if (
+            start is None
+            or end is None
+            or start.day != 1
+            or end.day != 1
+            or any(
+                (
+                    start.hour,
+                    start.minute,
+                    start.second,
+                    start.microsecond,
+                    end.hour,
+                    end.minute,
+                    end.second,
+                    end.microsecond,
+                )
+            )
+            or end != start.add(months=1)
+        ):
+            raise ValueError("Expected a calendar-month training interval")
+        cutoff = end.date()
+        if override is not None and override != cutoff.isoformat():
+            raise ValueError("training_cutoff cannot override interval")
+    effective = context["params"].get("effective_from")
+    return cutoff.isoformat(), effective or (
+        cutoff + timedelta(days=1)
+    ).isoformat()
+
+
+def validate_training_input():
+    from retail_models import build_training_context
+
+    context = get_current_context()
+    try:
+        cutoff, effective = training_dates(context)
+        return build_training_context(
+            data_root(),
+            context["dag"].dag_id,
+            context["run_id"],
+            cutoff,
+            {**context["params"], "effective_from": effective},
+        )
+    except (ValueError, OSError, KeyError) as error:
+        raise AirflowFailException(str(error)) from error
+
+
+def publish_trained_model():
+    from retail_models import publish_model
+
+    context = get_current_context()
+    metadata = context["ti"].xcom_pull(task_ids="validate_training_input")
+    inputs = load_context(metadata["context_path"])
+    activation = publish_model(data_root(), inputs)
+    LOGGER.info("MODEL_ACTIVATED %s", json.dumps(activation, sort_keys=True))
+
+
 def log_failure(context):
     ti = context.get("task_instance")
     LOGGER.error(

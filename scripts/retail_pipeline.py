@@ -16,6 +16,7 @@ from retail_contracts import (
     json_hash,
     load_context,
     load_stage,
+    publication_lock,
     safe_path,
     stage_file,
     validate_landing,
@@ -186,9 +187,17 @@ def run_clean(spark, context, output, root):
 
 
 def run_rfm(spark, context, output, root):
+    from pyspark.ml import PipelineModel
+
+    from retail_models import (
+        FEATURE_VERSION,
+        SCORE_REFERENCE_MODE,
+        read_model,
+        validate_binding,
+    )
     from pyspark_rfm import (
         add_rfm_scores,
-        add_rfm_segment,
+        apply_rfm_model,
         compute_rfm,
         select_history,
         validate_curated_contract,
@@ -201,9 +210,25 @@ def run_rfm(spark, context, output, root):
     )
     validate_curated_contract(source)
     history = select_history(source, context["run_date"])
-    result = add_rfm_segment(
-        add_rfm_scores(compute_rfm(history, context["run_date"])),
-        k=context["rfm_k"],
+    if context.get("kind") != "daily":
+        raise ValueError("Scoring requires a daily model-bound context")
+    validate_binding(
+        root,
+        context["model"],
+        context["run_date"],
+        context["source_version"],
+        context["source_hash"],
+    )
+    manifest = read_model(root, context["model"], verify_artifact=True)
+    model = PipelineModel.load(str(safe_path(root, manifest["pipeline_path"])))
+    result = apply_rfm_model(
+        add_rfm_scores(compute_rfm(history, context["run_date"])), model
+    ).withColumns(
+        {
+            "model_version": F.lit(manifest["model_version"]),
+            "feature_version": F.lit(FEATURE_VERSION),
+            "score_reference_mode": F.lit(SCORE_REFERENCE_MODE),
+        }
     )
     history_days = (
         date.fromisoformat(context["run_date"])
@@ -323,8 +348,26 @@ def run_stage(stage, context_path):
             "metrics": metrics,
             "duration_seconds": round(time.monotonic() - started, 3),
         }
+        if stage == "rfm":
+            manifest["model"] = context["model"]
         atomic_json(output / "summary.json", manifest)
         atomic_json(stage_file(root, context, stage), manifest)
+        if stage == "etl":
+            # Available to training even if later daily scoring fails.
+            with publication_lock(root, context["run_date"]):
+                atomic_json(
+                    safe_path(
+                        root,
+                        f"manifests/etl/{context['source_version']}/"
+                        f"{context['run_date']}.json",
+                    ),
+                    {
+                        "etl_manifest": stage_file(root, context, "etl")
+                        .relative_to(root)
+                        .as_posix(),
+                        "etl_hash": json_hash(manifest),
+                    },
+                )
         LOGGER.warning("STAGE_COMPLETE %s", manifest)
     finally:
         spark.stop()

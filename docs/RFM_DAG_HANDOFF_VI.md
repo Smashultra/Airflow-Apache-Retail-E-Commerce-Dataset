@@ -17,10 +17,14 @@ Không lấy `.agent/backups/rfm_cli_20261008/pyspark_rfm.py` làm source triể
 đó là bản trước khi đơn giản hóa CLI, suy ra bucket count và bắt buộc input daily.
 Tài liệu cũ `RFM_INCREMENTAL_VI.md` còn ví dụ daily không có input; ví dụ đó không còn hợp lệ.
 
-**DAG hiện có chưa gọi được trực tiếp CLI này.** `dags/ecommerce_etl_dag.py`
-truyền `--pipeline-context`; cả hai entry point RFM hiện tại không nhận tham số đó.
-Daily cũng không nhận `--k`. Người ghép phải sửa hợp đồng gọi task và phần kiểm tra/
-publish downstream; không chỉ đổi tên script trong helper `spark_job` hiện tại.
+**Cập nhật tích hợp 2026-10-11:** `pyspark_rfm.py` nhận thêm nhánh
+`--pipeline-context` để gọi adapter `retail_pipeline` của DAG hiện có. Nhánh này
+đọc snapshot ETL đầy đủ, dùng model registry đã đóng băng và xuất stage manifest
+cho downstream/publish; chưa chuyển DAG sang incremental store. Training DAG
+gọi `retail_training.py`, dùng chung hàm fit của `train_rfm_kmeans.py`.
+CLI incremental bên dưới vẫn giữ nguyên hợp đồng, daily không nhận `--k`.
+Muốn chuyển DAG sang CLI incremental cần thực hiện đầy đủ mục 6, gồm hợp đồng
+batch, store, model và publication; không chỉ đổi tên script trong `spark_job`.
 
 ## 2. Luồng vận hành
 

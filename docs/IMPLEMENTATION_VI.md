@@ -2,6 +2,29 @@
 
 Ngày triển khai: 29/09/2026. Căn cứ: [thiết kế theo sách và rubric](DAG_DESIGN_VI.md).
 
+## Cập nhật hai DAG — 06/10/2026
+
+- Daily giữ sáu task; `run_rfm` chỉ nạp PipelineModel và transform. Sau tích hợp 2026-10-11, `pyspark_rfm.py` giữ CLI incremental chỉ load/score từ upstream; adapter `--pipeline-context` giữ snapshot/manifest của DAG. Hàm fit dùng chung `train_rfm_kmeans.train_model`, chỉ được gọi trong training. Xem `RFM_DAG_HANDOFF_VI.md`.
+- [retail_rfm_training_dag.py](../dags/retail_rfm_training_dag.py) có ba task: validate input → Spark training → publish model. Cả hai DAG dùng chung pool retail_spark; training đọc ETL đã commit, không cần daily completion.
+- [retail_models.py](../scripts/retail_models.py) quản lý model/activation hash, hiệu lực và context pinning. Registry là JSON atomic dưới lock; artifact model immutable. Retry giữ model; model tương lai, source/feature không tương thích hoặc artifact hỏng bị từ chối.
+- [retail_training.py](../scripts/retail_training.py) cung cấp bootstrap ETL-only và training; lưu full scaler/KMeans, kiểm tra save/load assignment, centroid/scaler hữu hạn và occupied clusters trên tập fit. Daily có thể chỉ dùng một phần cụm.
+- ETL thêm index metadata theo source/cutoff; thuật toán ETL/audit giữ nguyên. Daily vẫn dùng cumulative history và percent_rank; không tuyên bố ngưỡng Marketing cố định.
+- Hướng dẫn bootstrap, trigger training trước daily và recovery nằm ở [SETUP](SETUP.md). Model đầu tiên của dữ liệu thật chưa được tạo trong lượt sửa code này; tests dùng namespace tạm.
+
+Kiểm chứng trong image hiện có:
+
+```text
+python -m pytest -q tests/test_retail_contracts.py tests/test_retail_models.py tests/test_retail_dag.py
+19 passed in 9.03s
+
+python -m pytest -q tests/test_retail_training.py tests/test_retail_pipeline.py tests/test_pyspark_rfm.py tests/test_pyspark_clean.py tests/test_pyspark_anomalies.py
+75 passed, 1 warning in 245.82s
+```
+
+Lifecycle test chạy Spark thật: bootstrap → training → artifact round-trip → activation → daily ETL/RFM/audit → completion → read-back. Khi chạy daily, test thay `Pipeline.fit` bằng hàm gây lỗi để xác nhận không refit; kiểm tra scoring một khách với k=2 vẫn hợp lệ. Tests bổ sung xác nhận activation mới không đổi run đã pin, ngày/nguồn/feature sai bị chặn, artifact hỏng và registry replace thất bại không sửa bản công bố trước.
+
+Ruff 0.15.7 kiểm tra `dags scripts tests` đạt; Airflow `dags list-import-errors` trả `No data found`, `dags list` nhận diện hai DAG, cả hai paused. Cảnh báo Spark là upstream pandas >=3.0 compatibility. Chưa có scheduler smoke hai DAG trên full dataset, fault injection JVM hoặc đo concurrency mới; các số liệu scheduler/full-data dưới đây là bằng chứng baseline 29/09, không phải kết quả của kiến trúc mới.
+
 ## Code và lựa chọn thực tế
 
 | Phần | File | Lý do |

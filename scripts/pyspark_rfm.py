@@ -707,6 +707,24 @@ def add_rfm_segment(rfm: DataFrame, model_path: str,
     return score_rfm_with_model(rfm, load_rfm_model(model_path), model_version)
 
 
+def fit_rfm_model(
+    rfm: DataFrame, k: int, seed: int = DEFAULT_KMEANS_SEED
+) -> PipelineModel:
+    """Use the shared training implementation for the model-registry DAG."""
+    if __package__:
+        from .train_rfm_kmeans import train_model
+    else:
+        from train_rfm_kmeans import train_model
+    return train_model(rfm, k, seed)
+
+
+def apply_rfm_model(rfm: DataFrame, model: PipelineModel) -> DataFrame:
+    """Score a frozen DAG model; the caller attaches its registry version."""
+    return model.transform(prepare_kmeans_features(rfm)).drop(
+        *LOG_FEATURES, "raw_features", "features"
+    )
+
+
 # Check results before writing to output folder
 def validate_rfm_output(result: DataFrame, run_date: str, k: int,
                         model_version: str | None = None) -> None:
@@ -874,4 +892,11 @@ def main():
             # finally bảo đảm vẫn cố dừng Spark ngay cả khi việc giải phóng cache gặp lỗi
 
 if __name__ == "__main__":
-    main()
+    import sys
+
+    if "--pipeline-context" in sys.argv:
+        from retail_pipeline import pipeline_main
+
+        pipeline_main("rfm")
+    else:
+        main()
