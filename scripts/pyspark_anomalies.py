@@ -19,7 +19,7 @@ else:  # spark-submit executes the file from scripts/ without a package.
 
 logger = logging.getLogger("retail_anomalies")
 REFERENCE_MODE = "retrospective_before_run_date"
-BUSINESS_RULES = (
+LEGACY_BUSINESS_RULES = (
     "cancel_nonnegative_quantity", "negative_quantity_non_cancel",
     "negative_unit_price", "zero_price_in_priced_invoice",
     "all_zero_price_invoice", "multiple_customer_ids",
@@ -41,9 +41,16 @@ ORDER_MIN_FOLD = 3.0
 MIN_CUSTOMER_STOCK_LINES = 5
 MIN_CUSTOMER_LINES = 20
 MIN_CUSTOMER_INVOICES = 5
+# Tier 2 business rules (Chandola et al. 2009: point, contextual, collective).
+BUSINESS_RULES = (
+    "quantity_deviation", "price_deviation", "zero_price_sale_line",
+    "all_zero_price_invoice", "inventory_adjustment", "manual_accounting_entry",
+    "unmatched_return",
+)
+RETURN_WINDOW_DAYS = 30
 SEVERITY_HIGH_GBP = 1000.0
 SEVERITY_MEDIUM_GBP = 100.0
-RULES = BUSINESS_RULES + IQR_RULES
+RULES = LEGACY_BUSINESS_RULES + IQR_RULES
 # Match the corrected full-word expressions in EDA_Anomalies.ipynb.
 KEYWORD_PATTERNS = (
     ("stock_words", r"\b(?:CHECK(?:ED|ING|S)?|ADJUST(?:ED|MENT|MENTS|ING)?|COUNTED|STOCK|HISTORIC|FOUND|TEST(?:ING|ED|S)?)\b"),
@@ -446,6 +453,52 @@ def add_deviation_checks(frame: DataFrame, z_threshold: float, min_samples: int)
     return result.withColumn("__deviation_checks", F.array(quantity_check, price_check))
 
 
+def add_operational_checks(frame: DataFrame) -> DataFrame:
+    """Free goods, stock counts, accounting entries and returns beyond purchases."""
+    dated_sales = frame.filter((F.col("record_type") == "sale") & F.col("InvoiceDate").isNotNull())
+    stock_price = dated_sales.groupBy("__stock").agg(
+        F.percentile("UnitPrice", F.lit(0.5)).alias("__stock_price"))
+    pair = ["__customer", "__stock"]
+    purchased = dated_sales.filter(F.col("__customer").isNotNull()).groupBy(*pair).agg(
+        F.sum("Quantity").alias("__purchased"))
+    returned = frame.filter((F.col("record_type") == "cancellation") & F.col("__customer").isNotNull()).groupBy(
+        *pair).agg(F.sum(F.abs("Quantity")).alias("__returned"))
+    history_start = frame.agg(F.min("InvoiceDate")).first()[0]
+    result = (frame.join(stock_price, "__stock", "left").join(purchased, pair, "left")
+              .join(returned, pair, "left"))
+    record_type = F.col("record_type")
+    estimated = lambda quantity: F.round(F.abs(quantity) * F.col("__stock_price"), 2)
+
+    def scope(kind: str) -> Column:
+        return F.when(record_type != kind, "outside_scope")
+
+    zero_reason = scope("zero_price_line").when(F.col("__invoice").isNull(), "missing_invoice_no")
+    window_start = (F.lit(history_start).cast("timestamp") + F.expr(f"INTERVAL {RETURN_WINDOW_DAYS} DAYS")
+                    if history_start is not None else F.lit(None).cast("timestamp"))
+    checks = (
+        _check("business", "zero_price_sale_line", zero_reason, F.col("__positive_price_lines") > 0,
+               observed=F.col("Quantity"), value_at_risk=estimated(F.col("Quantity"))),
+        _check("business", "all_zero_price_invoice", zero_reason, F.col("__positive_price_lines") == 0,
+               observed=F.col("Quantity"), reference_count=F.col("__invoice_lines"),
+               value_at_risk=estimated(F.col("Quantity"))),
+        _check("business", "inventory_adjustment", scope("inventory_adjustment"), F.lit(True),
+               observed=F.col("Quantity"), value_at_risk=estimated(F.col("Quantity"))),
+        _check("business", "manual_accounting_entry", scope("accounting_adjustment"), F.lit(True),
+               observed=F.col("line_value"), value_at_risk=F.round(F.abs("line_value"), 2),
+               severity=F.lit("high")),
+        _check("business", "unmatched_return",
+               scope("cancellation")
+               .when(F.col("__customer").isNull(), "no_customer_history")
+               .when(F.col("__service") | F.col("__special"), "service_or_special_code")
+               .when(F.col("InvoiceDate").isNull(), "missing_invoice_date")
+               .when(F.col("InvoiceDate") < window_start, "history_window_start"),
+               F.col("__returned") > F.coalesce(F.col("__purchased"), F.lit(0)),
+               observed=F.col("__returned"), reference_count=F.coalesce(F.col("__purchased"), F.lit(0)),
+               value_at_risk=F.round(F.abs("line_value"), 2)),
+    )
+    return result.withColumn("__operational_checks", F.array(*checks))
+
+
 def add_invoice_checks(context: DataFrame) -> DataFrame:
     valid_price = F.col("__valid_price")
     invoice_summary = (
@@ -467,26 +520,26 @@ def add_invoice_checks(context: DataFrame) -> DataFrame:
     multiple_ids = F.col("__customer_count") >= 2
     all_ids = F.col("__identified_lines") == F.col("__invoice_lines")
     checks = (
-        _legacy_check(BUSINESS_RULES[0],
+        _legacy_check(LEGACY_BUSINESS_RULES[0],
                F.when(missing_invoice, "missing_invoice_no").when(~valid_quantity, "invalid_numeric_value"),
                F.col("__cancel") & (F.col("Quantity") >= 0), F.col("Quantity")),
-        _legacy_check(BUSINESS_RULES[1],
+        _legacy_check(LEGACY_BUSINESS_RULES[1],
                F.when(missing_invoice, "missing_invoice_no").when(~valid_quantity, "invalid_numeric_value"),
                ~F.col("__cancel") & (F.col("Quantity") < 0), F.col("Quantity")),
-        _legacy_check(BUSINESS_RULES[2],
+        _legacy_check(LEGACY_BUSINESS_RULES[2],
                F.when(~valid_price, "invalid_numeric_value"), F.col("UnitPrice") < 0, F.col("UnitPrice")),
-        _legacy_check(BUSINESS_RULES[3],
+        _legacy_check(LEGACY_BUSINESS_RULES[3],
                F.when(missing_invoice, "missing_invoice_no")
                .when(~valid_price, "invalid_numeric_value")
                .when(~any_positive & ~all_prices, "incomplete_invoice_prices"),
                (F.col("UnitPrice") == 0) & any_positive,
                F.col("UnitPrice"), F.col("__invoice_lines")),
-        _legacy_check(BUSINESS_RULES[4],
+        _legacy_check(LEGACY_BUSINESS_RULES[4],
                F.when(missing_invoice, "missing_invoice_no")
                .when(~all_prices, "incomplete_invoice_prices"),
                F.col("__zero_price_lines") == F.col("__invoice_lines"),
                F.col("UnitPrice"), F.col("__invoice_lines")),
-        _legacy_check(BUSINESS_RULES[5],
+        _legacy_check(LEGACY_BUSINESS_RULES[5],
                F.when(missing_invoice, "missing_invoice_no")
                .when(~multiple_ids & ~all_ids, "incomplete_customer_ids"),
                multiple_ids, F.col("__customer_count"), F.col("__invoice_lines")),

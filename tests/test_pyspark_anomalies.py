@@ -10,6 +10,7 @@ from scripts.pyspark_anomalies import (
     add_base_columns,
     add_data_checks,
     add_deviation_checks,
+    add_operational_checks,
     add_invoice_summary,
     add_record_context,
     build_output,
@@ -378,3 +379,62 @@ def test_identified_never_uses_retail_baseline(spark):
     assert found["E0"]["quantity_deviation"].reason == "insufficient_history"
     assert found["E0"]["price_deviation"].reason == "insufficient_history"
     assert found["R0"]["quantity_deviation"].context_level == "channel_stock"
+
+
+def operational_checks(spark, rows):
+    frame = add_operational_checks(classify(spark, rows))
+    return {r.Description: {c.rule: c for c in r["__operational_checks"]} for r in frame.collect()}
+
+
+def test_operational_rules_value_at_risk(spark):
+    rows = [row(f"60{i}", "20A", "priced sale", 1, 2.0, "5") for i in range(3)]
+    rows += [
+        row("I1", "20A", "lost", -20, 0.0, None),
+        row("I2", "99Z", "found", 5, 0.0, None),
+        row("A9", "B", "Adjust bad debt", 1, -11062.06, None),
+        row("700", "20A", "sold", 1, 2.0, "5"),
+        row("700", "20A", "gift", 2, 0.0, "5"),
+        row("701", "20A", "all zero", 3, 0.0, "6"),
+    ]
+    found = operational_checks(spark, rows)
+
+    lost = found["lost"]["inventory_adjustment"]
+    assert (lost.status, lost.value_at_risk, lost.severity) == ("flagged", 40.0, "low")
+    found_row = found["found"]["inventory_adjustment"]
+    assert (found_row.status, found_row.value_at_risk, found_row.severity) == ("flagged", None, "low")
+    debt = found["Adjust bad debt"]["manual_accounting_entry"]
+    assert (debt.status, debt.value_at_risk, debt.severity) == ("flagged", 11062.06, "high")
+    gift = found["gift"]
+    assert gift["zero_price_sale_line"].status == "flagged" and gift["zero_price_sale_line"].value_at_risk == 4.0
+    assert gift["all_zero_price_invoice"].status == "not_flagged"
+    zero = found["all zero"]
+    assert zero["all_zero_price_invoice"].status == "flagged" and zero["all_zero_price_invoice"].value_at_risk == 6.0
+    assert zero["zero_price_sale_line"].status == "not_flagged"
+    assert found["priced sale"]["inventory_adjustment"].reason == "outside_scope"
+    assert all(c.tier == "business" for checks_ in found.values() for c in checks_.values())
+
+
+def test_unmatched_return_collective(spark):
+    early = datetime(2011, 1, 1)
+    rows = [
+        row("790", "40C", "first day", 1, 1.0, "U9", when=early),
+        row("800", "40C", "bought five", 5, 1.0, "U1"),
+        row("C801", "40C", "return five", -5, 1.0, "U1"),
+        row("C807", "40C", "return three", -3, 1.0, "U1"),
+        row("802", "40C", "bought ten", 10, 1.0, "U2"),
+        row("C802", "40C", "return part", -3, 1.0, "U2"),
+        row("C803", "40C", "return only", -2, 1.0, "U3"),
+        row("C804", "40C", "return no id", -2, 1.0, None),
+        row("C805", "POST", "postage refund", -1, 5.0, "U1"),
+        row("C806", "40C", "early return", -2, 1.0, "U3", when=datetime(2011, 1, 5)),
+    ]
+    found = {d: c["unmatched_return"] for d, c in operational_checks(spark, rows).items()}
+
+    assert found["return five"].status == "flagged" and found["return three"].status == "flagged"
+    assert found["return five"].observed_value == 8.0 and found["return five"].value_at_risk == 5.0
+    assert found["return part"].status == "not_flagged"
+    assert found["return only"].status == "flagged"
+    assert found["return no id"].reason == "no_customer_history"
+    assert found["postage refund"].reason == "service_or_special_code"
+    assert found["early return"].reason == "history_window_start"
+    assert found["bought five"].reason == "outside_scope"

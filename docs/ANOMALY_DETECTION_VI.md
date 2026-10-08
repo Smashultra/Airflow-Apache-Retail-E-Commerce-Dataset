@@ -214,9 +214,11 @@ Một dòng chỉ bị flag khi thỏa **cả** điều kiện thống kê **và
 | `all_zero_price_invoice` | collective | dòng giá 0 của hóa đơn có ID mà mọi dòng giá 0 | — | luôn | như trên |
 | `inventory_adjustment` | point | dòng kiểm kho | — | luôn | \|Qty\| × giá bán trung vị của mã |
 | `manual_accounting_entry` | point | bút toán | — | luôn, severity high | \|line_value\| |
-| `unmatched_return` | collective | dòng hủy có ID | tổng theo khách × mã | \|Σ Qty hủy\| > Σ Qty mua | \|line_value\| |
+| `unmatched_return` | collective | dòng hủy có ID, không phải mã phí/đặc biệt, sau 30 ngày đầu của lịch sử | tổng theo khách × mã | \|Σ Qty hủy\| > Σ Qty mua | \|line_value\| |
 
 Cấp hóa đơn: `order_value_deviation` so tổng hóa đơn đủ điều kiện với baseline khách (≥ 5 hóa đơn) → kênh (≥ 30 hóa đơn trong nhóm identified hoặc retail); flag khi z > 3.5 và fold ≥ 3.
+
+`unmatched_return` loại hai trường hợp theo bằng chứng E8: hủy mã phí/đặc biệt (Manual, POSTAGE, Discount…) là hoàn phí chứ không phải trả hàng (`service_or_special_code`); hủy trong 30 ngày đầu của lịch sử có thể ứng với hàng mua trước khi dữ liệu bắt đầu (`history_window_start`).
 
 Severity theo value_at_risk: high ≥ 1,000 GBP, medium ≥ 100 GBP, còn lại low (không ước được giá trị thì low).
 
@@ -235,6 +237,7 @@ Severity theo value_at_risk: high ≥ 1,000 GBP, medium ≥ 100 GBP, còn lại 
 | 2 | `add_invoice_summary`, `add_record_context` trong Spark | Mỗi dòng có `record_type`, `channel`, `has_dotcom_postage`; quy tắc khớp bảng 6.1 | `test_record_type_priority_and_channels` (14 dòng, đủ 7 loại và 5 kênh) → pass; suite anomaly 8 passed |
 | 3 | Tầng 1: `DATA_RULES`, struct check mới (tier, context_level, robust_z, fold_change, value_at_risk, severity) | 7 data rule; thiếu CustomerID không bị flag; bút toán nợ xấu không bị tính giá âm | `test_data_rules_dimensions_and_severity` → pass; suite 9 passed |
 | 4 | `robust_baseline` (median/MAD chính xác trên log), `quantity_deviation`, `price_deviation` | Cấp baseline khách × mã → khách → kênh × mã; MAD = 0 do ngưỡng trọng yếu quyết định; identified không bao giờ dùng baseline lẻ | `test_quantity_hierarchy_levels`, `test_price_deviation_zero_mad_and_direction`, `test_identified_never_uses_retail_baseline` → pass; suite 12 passed |
+| 5 | `BUSINESS_RULES`, `add_operational_checks`: giá 0, kiểm kho, bút toán, hủy vượt mua | value_at_risk ước tính bằng giá bán trung vị của mã; `unmatched_return` loại mã phí và 30 ngày đầu | `test_operational_rules_value_at_risk`, `test_unmatched_return_collective` → pass; suite 14 passed |
 
 ## 9. Kết quả chạy đầy đủ
 
