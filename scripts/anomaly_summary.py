@@ -75,6 +75,23 @@ def main(argv: Sequence[str] | None = None) -> None:
                      F.count("*").alias("applied"),
                      F.sum((F.col("status") == "flagged").cast("int")).alias("flagged"))
                  .orderBy("rule", "context_level"))
+        contextual = flagged.filter(F.col("rule").isin("quantity_deviation", "price_deviation"))
+        _section("R5b. Flag ngữ cảnh: MAD = 0, mức low, phân vị fold và value_at_risk",
+                 contextual.groupBy("rule", "context_level").agg(
+                     F.count("*").alias("flagged"),
+                     F.round(100 * F.avg(F.col("robust_z").isNull().cast("int")), 1).alias("mad0_pct"),
+                     F.round(100 * F.avg((F.col("severity") == "low").cast("int")), 1).alias("low_pct"),
+                     F.round(F.percentile("fold_change", F.lit(0.1)), 2).alias("fold_p10"),
+                     F.round(F.percentile("fold_change", F.lit(0.5)), 2).alias("fold_p50"),
+                     F.round(F.percentile("fold_change", F.lit(0.9)), 2).alias("fold_p90"),
+                     F.round(F.percentile("value_at_risk", F.lit(0.5)), 2).alias("value_p50"))
+                 .orderBy("rule", "context_level"))
+        _section("R5c. Flag giá theo chiều lệch và kênh",
+                 contextual.filter(F.col("rule") == "price_deviation").groupBy(
+                     F.when(F.col("fold_change") < 1, "lower").otherwise("higher").alias("direction"),
+                     "channel").agg(F.count("*").alias("rows"),
+                                    F.percentile("Quantity", F.lit(0.5)).alias("quantity_p50"))
+                 .orderBy("direction", "channel"))
         _section("R6. Lý do không áp dụng", checks.filter(F.col("status") == "not_applied")
                  .groupBy("rule", "reason").count().orderBy("rule", F.desc("count")))
         examples = flagged.filter(F.col("tier") == "business")

@@ -108,9 +108,9 @@ Cấp baseline dùng được cho rule số lượng (% dòng sale):
 | Cấp | identified | retail |
 |---|---:|---:|
 | customer_stock (≥ 5 dòng cùng khách và mã) | 14.00 | – |
-| customer (≥ 20 dòng của khách) | 82.86 | – |
-| channel_stock (≥ 30 dòng của mã trong nhóm) | 2.99 | 84.43 |
-| Không đủ lịch sử | 0.15 | 15.57 |
+| customer (≥ 20 dòng của khách trên các mã có trung vị tin cậy, tức mã có ≥ 30 dòng identified) | 79.06 | – |
+| channel_stock (≥ 30 dòng của mã trong nhóm) | 3.22 | 84.43 |
+| Không đủ lịch sử | 3.73 | 15.57 |
 
 ### E6. Dòng kiểm kho
 
@@ -130,7 +130,7 @@ Giá trị ước tính = |Quantity| × giá bán trung vị của mã đó.
 |---:|---:|---:|---:|---:|
 | 7,792 | 967 | 891 | 1,173 | 156,752.38 |
 
-Kiểm tra thêm 1,061 dòng hủy không có lần mua tương ứng:
+Kiểm tra thêm 1,061 dòng hủy không có lần mua tương ứng (bảng E8b–E8d của script):
 - 34.4% là mã phí/đặc biệt (Manual 175, POSTAGE 97, Discount 77, CRUK Commission 16), tức hoàn phí chứ không phải trả hàng.
 - Trong 12/2010, 33% dòng hủy không có lần mua tương ứng (227/681); tháng 1–2/2011 khoảng 17–20%, từ tháng 3 trở đi khoảng 6–13%: có hiệu ứng đầu kỳ (hàng mua trước 01/12/2010 không có trong dữ liệu), nhưng hiện tượng vẫn kéo dài cả năm.
 
@@ -142,7 +142,7 @@ Kiểm tra thêm 1,061 dòng hủy không có lần mua tương ứng:
 | retail_other | 1 / 2 / 10 / 56 |
 | identified | 3 / 12 / 24 / 43 |
 
-Hóa đơn web: giá trị trung vị 1,338 GBP, 1–6 hóa đơn/ngày (trung vị 2) trong 225 ngày, toàn bộ ở United Kingdom, gần như không lặp mã hàng trong cùng hóa đơn (0.12%).
+(Bảng E9a–E9b của script.) Hóa đơn web: giá trị trung vị 1,338 GBP, 1–6 hóa đơn/ngày (trung vị 2) trong 225 ngày, toàn bộ ở United Kingdom, gần như không lặp mã hàng trong cùng hóa đơn (0.12%).
 
 ## 5. Insight
 
@@ -152,7 +152,7 @@ Hóa đơn web: giá trị trung vị 1,338 GBP, 1–6 hóa đơn/ngày (trung v
 4. **Một hóa đơn DOT có thể không phải một khách**: trung vị 149 dòng và 1,338 GBP mỗi hóa đơn, vài hóa đơn mỗi ngày. Có thể đây là bút toán gộp đơn web, hoặc giỏ hàng rất lớn; dữ liệu không đủ để chốt. Hệ quả: so sánh tổng hóa đơn trong kênh lẻ là so các "bút toán hóa đơn", không phải so từng người mua.
 5. **`retail_other` là kênh chưa xác định**: 917 hóa đơn, trung vị 2 dòng, giá giống kênh lẻ. Công ty không có cửa hàng, nên đây có thể là đơn điện thoại/email, đơn qua marketplace hoặc nhập tay; không gắn nhãn "tại cửa hàng".
 6. **Kiểm kho là sổ cần đối soát, không phải nhiễu**: 2,101 dòng, ước tính 469k GBP, 70 dòng ≥ 1,000 GBP. Dòng kiểm kho dồn ở kênh `internal`.
-7. **Lịch sử khách mỏng ở cấp hóa đơn, dày ở cấp dòng**: trung vị chỉ 2 hóa đơn/khách (25.4% khách có ≥ 5), nhưng 96.9% dòng sale của khách định danh có baseline cấp khách. Baseline hóa đơn theo khách cần lùi về baseline kênh cho đa số khách.
+7. **Lịch sử khách mỏng ở cấp hóa đơn, dày ở cấp dòng**: trung vị chỉ 2 hóa đơn/khách (25.4% khách có ≥ 5), nhưng 93.1% dòng sale của khách định danh có baseline cấp khách (khách × mã hoặc khách). Baseline hóa đơn theo khách cần lùi về baseline kênh cho đa số khách.
 8. **Giá theo khách gần như cố định** (97.8% cặp có MAD = 0): z-score không dùng được một mình vì mọi chênh lệch đều cho z vô hạn. Ngưỡng trọng yếu (lệch ≥ 30%) là điều kiện quyết định.
 9. **Hủy vượt mua cần lọc trước khi kết luận**: loại mã phí và tính đến đầu kỳ dữ liệu, nếu không rule sẽ báo nhầm hàng trăm dòng hoàn phí.
 
@@ -208,7 +208,7 @@ Một dòng chỉ bị flag khi thỏa **cả** điều kiện thống kê **và
 
 | Rule | Loại | Áp dụng | Baseline (cấp đầu tiên đủ mẫu) | Flag khi | value_at_risk |
 |---|---|---|---|---|---|
-| `quantity_deviation` | contextual | sale | identified: khách × mã (≥ 5) → khách (≥ 20, theo tỷ lệ Qty / trung vị Qty của mã) → kênh × mã (≥ 30); retail: kênh × mã | z > 3.5 và fold ≥ 3 | (Qty − Qty kỳ vọng) × UnitPrice |
+| `quantity_deviation` | contextual | sale | identified: khách × mã (≥ 5) → khách (≥ 20, theo tỷ lệ Qty / trung vị Qty của mã; chỉ dùng mã có ≥ 30 dòng identified để trung vị đáng tin) → kênh × mã (≥ 30); retail: kênh × mã | z > 3.5 và fold ≥ 3 | (Qty − Qty kỳ vọng) × UnitPrice |
 | `price_deviation` | contextual | sale | identified: khách × mã (≥ 5) → kênh × mã (≥ 30); retail: kênh × mã | \|z\| > 3.5 và \|fold − 1\| ≥ 30% | \|giá − giá kỳ vọng\| × Qty |
 | `zero_price_sale_line` | point | dòng giá 0 trong hóa đơn có dòng trả tiền | — | luôn | Qty × giá bán trung vị của mã |
 | `all_zero_price_invoice` | collective | dòng giá 0 của hóa đơn có ID mà mọi dòng giá 0 | — | luôn | như trên |
@@ -240,13 +240,12 @@ Severity theo value_at_risk: high ≥ 1,000 GBP, medium ≥ 100 GBP, còn lại 
 | 5 | `BUSINESS_RULES`, `add_operational_checks`: giá 0, kiểm kho, bút toán, hủy vượt mua | value_at_risk ước tính bằng giá bán trung vị của mã; `unmatched_return` loại mã phí và 30 ngày đầu | `test_operational_rules_value_at_risk`, `test_unmatched_return_collective` → pass; suite 14 passed |
 | 6 | Lắp `build_output` (14 check theo thứ tự `RULES`), `validate_output`, CLI `--z-threshold`, log theo tier/kênh/severity; bỏ IQR và rule cũ; cập nhật README | Thêm `localCheckpoint()` sau phân loại và sau deviation: một test 10 dòng giảm từ 94 s xuống 32 s, cả suite từ hơn 9 phút (kèm lỗi bộ nhớ broadcast) xuống 110 s | suite anomaly 13 passed |
 | 7 | Chuyển `assess_orders` từ `retail_pipeline.py` sang `pyspark_anomalies.py`; thay mean + 3σ toàn cục bằng baseline robust theo khách (≥ 5 hóa đơn) → kênh (≥ 30 hóa đơn, identified hoặc retail) | `retail_pipeline.run_audit` chỉ import và ghi ba output; tiêu chí eligibility và các reason cũ giữ nguyên, `insufficient_reference`/`zero_or_invalid_stddev` thay bằng `insufficient_history` | `test_order_value_customer_then_channel_baseline`, `test_assess_orders_empty_and_sparse` → pass; anomaly + pipeline + DAG + contracts 30 passed |
-| 8 | Chạy clean + anomaly trên toàn bộ dữ liệu, script `anomaly_summary.py`, kết quả mục 9 | 536,641 dòng; phân loại khớp E2/E4; 46,933 dòng và 54 hóa đơn bị flag; phát hiện cần hiệu chỉnh rule ngữ cảnh (mục 9.3) | Job exit 0 (252 s); summary exit 0 |
+| 8 | Chạy clean + anomaly trên toàn bộ dữ liệu, script `anomaly_summary.py`, kết quả mục 9 | 536,641 dòng; phân loại khớp E2/E4; phát hiện cần hiệu chỉnh rule ngữ cảnh (mục 9.3) | Job exit 0; summary exit 0 |
+| Review | Reviewer độc lập: 0 Critical, 4 Important (+1 nâng hạng), 4 Minor. Sửa: check `not_applied` không mang số liệu; cấp `customer` yêu cầu trung vị mã từ ≥ 30 dòng (mã hiếm không còn so với chính nó); chống tràn số Quantity = −2,147,483,648; test nhánh z-score; mọi số liệu mục 4 và 9 có bảng trong script | 4 test mới RED → GREEN (test z-score kiểm bằng mutation); bộ đầy đủ 98 passed; chạy lại toàn bộ dữ liệu: 46,341 dòng và 54 hóa đơn bị flag |
 
 ## 9. Kết quả chạy đầy đủ
 
-> **Lưu ý (tạm dừng 08/10/2026):** số liệu mục 9 là của lần chạy trước bản sửa sau review. Bản sửa thay đổi cấp baseline `customer` của `quantity_deviation` (yêu cầu trung vị của mã có ≥ 30 dòng), nên các con số sẽ được cập nhật sau khi chạy lại.
-
-Chạy ngày 08/10/2026 trong Docker (`local[2]`, driver 3 GB), `run_date = 2011-12-10`:
+Chạy ngày 09/10/2026 (sau bản sửa review) trong Docker (`local[2]`, driver 3 GB), `run_date = 2011-12-10`:
 
 ```bash
 docker compose run --rm --no-deps airflow-scheduler bash -c 'spark-submit --master local[2] --driver-memory 3g /opt/airflow/scripts/pyspark_clean.py --input /opt/airflow/data/raw/data.csv --rfm-output /opt/airflow/data/curated/RFM.parquet --anomalies-output /opt/airflow/data/audit/anomalies.parquet'
@@ -254,7 +253,7 @@ docker compose run --rm --no-deps airflow-scheduler bash -c 'spark-submit --mast
 docker compose run --rm --no-deps airflow-scheduler bash -c 'spark-submit --master local[2] --driver-memory 3g /opt/airflow/scripts/anomaly_summary.py --results /opt/airflow/data/audit/anomaly_results/run_date=2011-12-10 --input /opt/airflow/data/audit/anomalies.parquet --run-date 2011-12-10'
 ```
 
-Job anomaly: exit 0, 252 giây, 536,641 dòng vào và ra (multiset được `validate_output` xác nhận).
+Job anomaly: exit 0, 160 giây, 536,641 dòng vào và ra (multiset được `validate_output` xác nhận).
 
 **Đối soát với bằng chứng Task 1:** số dòng theo `record_type` (sale 522,451; cancellation 9,251; fee_service 2,441; inventory_adjustment 2,101; zero_price_line 394; accounting_adjustment 3) và theo `channel` (identified 401,604; retail_web 120,114; retail_other 12,819; internal 2,104) khớp tuyệt đối bảng E2/E4 tính độc lập bằng pandas.
 
@@ -262,14 +261,14 @@ Job anomaly: exit 0, 252 giây, 536,641 dòng vào và ra (multiset được `va
 
 | Trạng thái | Mức cao nhất | Dòng |
 |---|---|---:|
-| flagged | high | 165 |
-| flagged | medium | 2,201 |
-| flagged | low | 44,567 |
-| not_flagged | – | 489,708 |
+| flagged | high | 166 |
+| flagged | medium | 2,178 |
+| flagged | low | 43,997 |
+| not_flagged | – | 490,300 |
 
 | Tier | Rule | Dòng | Hóa đơn | value_at_risk (GBP) | high | medium | low |
 |---|---|---:|---:|---:|---:|---:|---:|
-| business | quantity_deviation | 25,010 | 6,421 | 967,400.53 | 71 | 1,176 | 23,763 |
+| business | quantity_deviation | 24,422 | 6,336 | 954,875.33 | 72 | 1,153 | 23,197 |
 | business | price_deviation | 21,659 | 4,610 | 400,333.92 | 23 | 456 | 21,180 |
 | business | inventory_adjustment | 2,101 | 2,092 | 469,433.79 | 70 | 594 | 1,437 |
 | business | unmatched_return | 572 | 307 | 13,444.14 | 1 | 16 | 555 |
@@ -280,13 +279,13 @@ Job anomaly: exit 0, 252 giây, 536,641 dòng vào và ra (multiset được `va
 
 Các data rule còn lại không có dòng nào bị flag: dữ liệu sau loại trùng không thiếu trường bắt buộc, không có số không hợp lệ, không có xung đột dấu, không có hóa đơn nhiều khách hay lệch header.
 
-Rule ngữ cảnh theo cấp baseline:
+Rule ngữ cảnh theo cấp baseline (bảng R5, R5b, R5c của `anomaly_summary.py`):
 
 | Rule | Cấp | Áp dụng | Flag | % flag có MAD = 0 | % flag mức low | fold p10 / p50 / p90 |
 |---|---|---:|---:|---:|---:|---|
 | quantity_deviation | customer_stock | 54,741 | 1,663 | 90.6 | 87.9 | 3.0 / 4.0 / 10.0 |
-| quantity_deviation | customer | 324,038 | 12,766 | 87.9 | 95.7 | 3.0 / 4.0 / 8.0 |
-| quantity_deviation | channel_stock | 122,626 | 10,581 | 96.8 | 95.3 | 3.0 / 4.0 / 12.0 |
+| quantity_deviation | customer | 309,152 | 12,150 | 88.3 | 95.7 | 3.0 / 4.0 / 8.0 |
+| quantity_deviation | channel_stock | 123,504 | 10,609 | 96.7 | 95.2 | 3.0 / 4.0 / 12.0 |
 | price_deviation | customer_stock | 54,741 | 399 | 99.7 | 98.7 | 0.29 / 1.32 / 2.98 |
 | price_deviation | channel_stock | 432,656 | 21,260 | 83.0 | 97.8 | 0.33 / 1.32 / 3.11 |
 
@@ -319,8 +318,8 @@ Lý do không đánh giá: hóa đơn hủy 3,836; có dòng không hợp lệ (
 
 ### 9.3. Đánh giá và đề xuất hiệu chỉnh (chờ duyệt)
 
-- **Flag high/medium (2,366 dòng, 54 hóa đơn) có ý nghĩa rõ ràng:** đơn đặt nhầm cực lớn rồi hủy, giá lệch hàng trăm lần, lô hàng mốc bị hủy hàng chục nghìn GBP, bút toán nợ xấu, giao hàng không tính tiền.
-- **Flag low (44,567 dòng) chủ yếu là hành vi bình thường:**
+- **Flag high/medium (2,344 dòng, 54 hóa đơn) có ý nghĩa rõ ràng:** đơn đặt nhầm cực lớn rồi hủy, giá lệch hàng trăm lần, lô hàng mốc bị hủy hàng chục nghìn GBP, bút toán nợ xấu, giao hàng không tính tiền.
+- **Flag low (43,997 dòng) chủ yếu là hành vi bình thường:**
   - 83–99.7% flag ngữ cảnh có MAD = 0 (E7: giá và lô hàng của khách gần như cố định), nên điều kiện z-score không còn tác dụng; chỉ ngưỡng trọng yếu quyết định.
   - Lệch giá phần lớn là **giá theo bậc số lượng** (mua ít giá cao, mua nhiều giá thấp), không phải bất thường.
   - Lệch số lượng trung vị gấp 4 lần, value_at_risk trung vị 10–16 GBP: khách sỉ tăng đơn mùa cao điểm là bình thường.

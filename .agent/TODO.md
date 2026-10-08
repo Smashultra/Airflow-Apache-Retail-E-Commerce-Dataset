@@ -2,7 +2,8 @@
 
 | Status | Task | Owner | Branch | Dependency |
 |---|---|---|---|---|
-| IN PROGRESS | Final-review fix pass for anomaly rule base (paused; remaining: reproducibility scripts, full suite, full-data re-run, doc section 9 refresh) | Claude | `feature/anomaly-rule-base` | See HANDOFF 'review fix pass PAUSED' |
+| DONE | Final-review fix pass for anomaly rule base | Claude | `feature/anomaly-rule-base` | 98 Docker tests passed; full-data re-run exit 0 |
+| TODO | Run DAG `detect_anomalies` end-to-end through Airflow after merge | Unassigned | - | Airflow stack initialized |
 | DONE | Two-tier anomaly rule base by record type, channel and per-customer baseline; move assess_orders into pyspark_anomalies.py; document in docs/ANOMALY_DETECTION_VI.md | Claude | `feature/anomaly-rule-base` | 94 Docker tests passed; full-data run exit 0; `.agent/plans/archive/2026-10-08-anomaly-rule-base.md` |
 | TODO | Recalibrate contextual anomaly rules (quantity-tier pricing, MAD floor, minimum value_at_risk) per docs/ANOMALY_DETECTION_VI.md section 9.3 | Unassigned | - | User approval of new constants |
 | TODO | Update handbook and DAG design docs to the two-tier anomaly rule base | Unassigned | - | Merge of `feature/anomaly-rule-base` |

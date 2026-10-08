@@ -197,10 +197,12 @@ def e5_history_depth(data: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
         "share_customers_ge5_invoices_pct": [100 * (invoices_per_customer >= MIN_CUSTOMER_INVOICES).mean()],
     }).set_index("customers")
     pair_n = identified.groupby(["customer", "stock"])["invoice"].transform("size")
-    customer_n = identified.groupby("customer")["invoice"].transform("size")
     stock_n = sales.groupby(["baseline_group", "stock"])["invoice"].transform("size")
+    # Customer level needs a reliable identified stock median (>= MIN_CHANNEL_SAMPLES lines).
+    reliable = stock_n.loc[identified.index] >= MIN_CHANNEL_SAMPLES
+    customer_n = reliable.groupby(identified["customer"]).transform("sum")
     level = _select(
-        [pair_n >= MIN_CUSTOMER_STOCK_LINES, customer_n >= MIN_CUSTOMER_LINES,
+        [pair_n >= MIN_CUSTOMER_STOCK_LINES, (customer_n >= MIN_CUSTOMER_LINES) & reliable,
          stock_n.loc[identified.index] >= MIN_CHANNEL_SAMPLES],
         ["customer_stock", "customer", "channel_stock"], default="insufficient_history",
     )
@@ -266,6 +268,49 @@ def e8_returns(data: pd.DataFrame) -> pd.DataFrame:
     }).set_index("cancel_pairs")
 
 
+
+def e8_no_purchase(data: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Identified cancellation lines whose customer x stock pair has no sale."""
+    identified = data[data["customer"].notna()]
+    bought = identified[identified["record_type"] == "sale"].groupby(["customer", "stock"])["Quantity"].sum()
+    cancels = identified[identified["record_type"] == "cancellation"].copy()
+    keys = pd.MultiIndex.from_frame(cancels[["customer", "stock"]])
+    cancels["no_purchase"] = ~keys.isin(bought.index)
+    cancels["month"] = cancels["InvoiceDate"].dt.to_period("M").astype(str)
+    without = cancels[cancels["no_purchase"]]
+    customers_with_sales = set(identified.loc[identified["record_type"] == "sale", "customer"])
+    summary = pd.DataFrame({
+        "no_purchase_lines": [len(without)],
+        "fee_or_special_pct": [100 * without["stock"].str.fullmatch(r"[A-Z ]+").fillna(False).mean()],
+        "customer_without_any_sale": [(~without["customer"].isin(customers_with_sales)).sum()],
+    }).set_index("no_purchase_lines")
+    descriptions = without["Description"].value_counts().head(8).rename("lines").to_frame()
+    monthly = cancels.groupby("month").agg(cancel_lines=("no_purchase", "size"),
+                                           no_purchase_lines=("no_purchase", "sum"))
+    monthly["no_purchase_pct"] = 100 * monthly["no_purchase_lines"] / monthly["cancel_lines"]
+    return summary, descriptions, monthly
+
+
+def e9_invoice_structure(data: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    lines = data.groupby(["channel", "invoice"]).size().groupby("channel").quantile(
+        [0.25, 0.5, 0.75, 0.9]).unstack()
+    lines.columns = [f"lines_p{int(q * 100)}" for q in lines.columns]
+    web = data[data["channel"] == "retail_web"]
+    invoices = web.groupby("invoice").agg(
+        lines=("invoice", "size"), stocks=("stock", "nunique"),
+        value=("line_value", lambda values: values[values > 0].sum()),
+        day=("InvoiceDate", lambda dates: dates.dt.date.iloc[0]),
+    )
+    per_day = invoices.groupby("day").size()
+    web_table = pd.DataFrame({
+        "invoices": [len(invoices)], "value_median_gbp": [invoices["value"].median()],
+        "days": [len(per_day)], "per_day_p10": [per_day.quantile(0.1)],
+        "per_day_p50": [per_day.median()], "per_day_p90": [per_day.quantile(0.9)],
+        "repeated_stock_pct": [100 * (1 - (invoices["stocks"] / invoices["lines"]).mean())],
+        "countries": [web["Country"].nunique()],
+    }).set_index("invoices")
+    return lines, web_table
+
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", required=True, help="Raw Online Retail CSV")
@@ -285,6 +330,13 @@ def main(argv: Sequence[str] | None = None) -> None:
     _section("E6. Giá trị ước tính dòng kiểm kho", e6_inventory(data))
     _section("E7. MAD log giá bằng 0 ở customer × stock", e7_zero_mad(data))
     _section("E8. Hủy vượt mua theo customer × stock", e8_returns(data))
+    summary, descriptions, monthly = e8_no_purchase(data)
+    _section("E8b. Dòng hủy có ID không có lần mua tương ứng", summary)
+    _section("E8c. Mô tả phổ biến nhất của các dòng đó", descriptions)
+    _section("E8d. Tỷ lệ theo tháng", monthly)
+    lines, web_table = e9_invoice_structure(data)
+    _section("E9a. Số dòng mỗi hóa đơn theo kênh", lines)
+    _section("E9b. Hóa đơn retail_web", web_table)
 
 
 if __name__ == "__main__":
