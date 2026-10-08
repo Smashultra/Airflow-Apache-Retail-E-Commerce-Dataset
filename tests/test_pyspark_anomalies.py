@@ -6,6 +6,9 @@ import pytest
 from pyspark.sql import SparkSession
 
 from scripts.pyspark_anomalies import (
+    add_base_columns,
+    add_invoice_summary,
+    add_record_context,
     build_output,
     parse_args,
     validate_input_contract,
@@ -233,3 +236,45 @@ def test_empty_and_partition_round_trip(spark, tmp_path):
     assert spark.read.parquet(first).count() == 1
     assert spark.read.parquet(previous_path).count() == 0
     assert spark.read.parquet(output_root).count() == 1
+
+
+def classify(spark, rows):
+    source = spark.createDataFrame(rows, TRANSACTION_SCHEMA)
+    return add_record_context(add_invoice_summary(add_base_columns(source)))
+
+
+def test_record_type_priority_and_channels(spark):
+    rows = [
+        row("A1", "B", "Adjust bad debt", 1, 11062.06, None),
+        row("C10", "100", "returned", -2, 1.0, "7"),
+        row("C11", "100", "returned retail", -1, 1.0, None),
+        row("500", "POST", "POSTAGE", 1, 18.0, "7"),
+        row("500", "100", "sold", 3, 2.0, "7"),
+        row("500", "200", "free gift", 2, 0.0, "7"),
+        row("501", "DOT", "DOTCOM POSTAGE", 1, 5.0, None),
+        row("501", "100", "web sale", 1, 4.0, None),
+        row("501", "300", "web free", 1, 0.0, None),
+        row("502", "100", "lost", -5, 0.0, None),
+        row("503", "100", "all zero", 1, 0.0, "8"),
+        row("504", "100", "other sale", 2, 3.0, None),
+        row(None, "100", "no invoice", 1, 1.0, "9"),
+        row("505", "100", "null quantity", None, 1.0, "9"),
+    ]
+    found = {r.Description: (r.record_type, r.channel, r.has_dotcom_postage)
+             for r in classify(spark, rows).collect()}
+    assert found == {
+        "Adjust bad debt": ("accounting_adjustment", "internal", False),
+        "returned": ("cancellation", "identified", False),
+        "returned retail": ("cancellation", "retail_other", False),
+        "POSTAGE": ("fee_service", "identified", False),
+        "sold": ("sale", "identified", False),
+        "free gift": ("zero_price_line", "identified", False),
+        "DOTCOM POSTAGE": ("fee_service", "retail_web", True),
+        "web sale": ("sale", "retail_web", True),
+        "web free": ("zero_price_line", "retail_web", True),
+        "lost": ("inventory_adjustment", "internal", False),
+        "all zero": ("zero_price_line", "identified", False),
+        "other sale": ("sale", "retail_other", False),
+        "no invoice": ("sale", "unknown", False),
+        "null quantity": ("unclassified", "identified", False),
+    }

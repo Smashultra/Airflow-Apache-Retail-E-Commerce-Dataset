@@ -195,6 +195,60 @@ def add_description_context(base: DataFrame) -> DataFrame:
     )))
 
 
+def add_invoice_summary(frame: DataFrame) -> DataFrame:
+    """Attach per-invoice counts used by record typing, channels and checks."""
+    valid_price = F.col("__valid_price")
+    result = frame.withColumn("__accounting", F.coalesce(
+        F.col("__invoice").startswith("A") | (F.col("__stock") == "B")
+        | (F.col("__description") == "ADJUST BAD DEBT"), F.lit(False)))
+    summary = (
+        result.filter(F.col("__invoice").isNotNull()).groupBy("__invoice")
+        .agg(
+            F.count("*").alias("__invoice_lines"),
+            F.sum(F.when(valid_price, 1).otherwise(0)).alias("__priced_lines"),
+            F.sum(F.when(valid_price & (F.col("UnitPrice") > 0), 1).otherwise(0)).alias("__positive_price_lines"),
+            F.sum(F.when(valid_price & (F.col("UnitPrice") == 0), 1).otherwise(0)).alias("__zero_price_lines"),
+            F.countDistinct("__customer").alias("__customer_count"),
+            F.count("__customer").alias("__identified_lines"),
+            F.countDistinct(_normalized(F.col("Country"))).alias("__country_count"),
+            F.countDistinct(F.to_date("InvoiceDate")).alias("__date_count"),
+            F.max(F.coalesce(F.col("__stock") == "DOT", F.lit(False))).alias("has_dotcom_postage"),
+            F.max(F.coalesce(valid_price & (F.col("UnitPrice") > 0) & ~F.col("__accounting"),
+                             F.lit(False))).alias("__retail_priced"),
+        )
+    )
+    return (result.join(summary, "__invoice", "left")
+            .withColumn("has_dotcom_postage", F.coalesce("has_dotcom_postage", F.lit(False))))
+
+
+def add_record_context(frame: DataFrame) -> DataFrame:
+    """Classify each row (record_type) and its invoice (channel)."""
+    price, quantity = F.col("UnitPrice"), F.col("Quantity")
+    record_type = (
+        F.when(F.col("__accounting"), "accounting_adjustment")
+        .when(F.col("__cancel"), "cancellation")
+        .when(F.col("__service") | F.col("__special"), "fee_service")
+        .when((price == 0) & F.col("__customer").isNull()
+              & (F.coalesce(F.col("__positive_price_lines"), F.lit(0)) == 0), "inventory_adjustment")
+        .when((quantity > 0) & (price > 0) & (F.col("line_value") > 0), "sale")
+        .when((price == 0) & (quantity > 0), "zero_price_line")
+        .otherwise("unclassified")
+    )
+    channel = (
+        F.when(F.col("__invoice").isNull(), "unknown")
+        .when(F.col("__identified_lines") > 0, "identified")
+        .when(F.col("has_dotcom_postage"), "retail_web")
+        .when(F.col("__retail_priced"), "retail_other")
+        .otherwise("internal")
+    )
+    return (
+        frame.withColumn("record_type", record_type).withColumn("channel", channel)
+        .withColumn("__baseline_group",
+                    F.when(F.col("channel") == "identified", "identified")
+                    .when(F.col("channel").isin("retail_web", "retail_other"), "retail"))
+    )
+
+
 def add_invoice_checks(context: DataFrame) -> DataFrame:
     valid_price = F.col("__valid_price")
     invoice_summary = (

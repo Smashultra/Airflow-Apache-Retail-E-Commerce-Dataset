@@ -232,6 +232,7 @@ Severity theo value_at_risk: high ≥ 1,000 GBP, medium ≥ 100 GBP, còn lại 
 | Task | Nội dung | Kết quả | Kiểm chứng |
 |---|---|---|---|
 | 1 | Script bằng chứng E1–E8, khung tài liệu | Bảng mục 4; hằng số giữ nguyên; hai điều chỉnh cho `unmatched_return` (xem mục 6.3, ghi ở Task 5) | `pytest tests/test_anomaly_evidence.py` → 1 passed; script chạy exit 0 trên 536,641 dòng |
+| 2 | `add_invoice_summary`, `add_record_context` trong Spark | Mỗi dòng có `record_type`, `channel`, `has_dotcom_postage`; quy tắc khớp bảng 6.1 | `test_record_type_priority_and_channels` (14 dòng, đủ 7 loại và 5 kênh) → pass; suite anomaly 8 passed |
 
 ## 9. Kết quả chạy đầy đủ
 
