@@ -9,6 +9,7 @@ from scripts.pyspark_anomalies import (
     DATA_RULES,
     add_base_columns,
     add_data_checks,
+    add_deviation_checks,
     add_invoice_summary,
     add_record_context,
     build_output,
@@ -325,3 +326,55 @@ def test_data_rules_dimensions_and_severity(spark):
     assert flagged("uk") == {"invoice_inconsistent_header": "medium"}
     assert flagged("day two") == {"invoice_inconsistent_header": "medium"}
     assert found["clean"]["cancel_sign_conflict"].severity is None
+
+
+def deviation_checks(spark, rows):
+    frame = add_deviation_checks(classify(spark, rows), z_threshold=3.5, min_samples=30)
+    return [(r.InvoiceNo, r.CustomerID, r.StockCode, r.Quantity, r.UnitPrice,
+             {c.rule: c for c in r["__deviation_checks"]}) for r in frame.collect()]
+
+
+def test_quantity_hierarchy_levels(spark):
+    rows = [row(f"S{i}", "10X", "item", 10, 2.0, "A") for i in range(6)]
+    rows += [row("S6", "10X", "item", 40, 2.0, "A"), row("S7", "10X", "item", 25, 2.0, "A")]
+    rows += [row(f"B{i}", "10X", "item", 10, 2.0, "B") for i in range(2)]
+    rows += [row(f"BY{i}", "10Y", "other", 5, 1.0, "B") for i in range(25)]
+    rows += [row("K0", "10X", "item", 10, 2.0, "C")]
+    rows += [row(f"D{i}", "10X", "item", 10, 2.0, "D") for i in range(25)]
+    rows += [row(f"R{i}", "10X", "item", 1, 4.0, None) for i in range(30)]
+    found = deviation_checks(spark, rows)
+    quantity = {(inv, qty): c["quantity_deviation"] for inv, _, _, qty, _, c in found}
+
+    spike = quantity[("S6", 40)]
+    assert (spike.status, spike.context_level, spike.fold_change) == ("flagged", "customer_stock", 4.0)
+    assert spike.robust_z is None and spike.reference_median == 10.0
+    assert spike.value_at_risk == 60.0 and spike.severity == "low"
+    assert quantity[("S7", 25)].status == "not_flagged"
+    assert quantity[("B0", 10)].context_level == "customer"
+    assert quantity[("K0", 10)].context_level == "channel_stock"
+    assert quantity[("R0", 1)].context_level == "channel_stock"
+    assert quantity[("R0", 1)].status == "not_flagged"
+
+
+def test_price_deviation_zero_mad_and_direction(spark):
+    rows = [row(f"P{i}", "10Z", "priced", 1, 1.0, "P") for i in range(5)]
+    rows += [row("P5", "10Z", "priced", 1, 1.4, "P"), row("P6", "10Z", "priced", 1, 1.2, "P"),
+             row("P7", "10Z", "priced", 1, 0.6, "P")]
+    price = {inv: c["price_deviation"] for inv, _, _, _, _, c in deviation_checks(spark, rows)}
+
+    assert price["P5"].status == "flagged" and price["P5"].robust_z is None
+    assert price["P5"].fold_change == pytest.approx(1.4)
+    assert price["P5"].context_level == "customer_stock"
+    assert price["P6"].status == "not_flagged"
+    assert price["P7"].status == "flagged" and price["P7"].fold_change == pytest.approx(0.6)
+    assert price["P0"].status == "not_flagged"
+
+
+def test_identified_never_uses_retail_baseline(spark):
+    rows = [row(f"R{i}", "10W", "retail only", 1, 4.0, None) for i in range(30)]
+    rows += [row("E0", "10W", "retail only", 50, 2.0, "E")]
+    found = {inv: c for inv, _, _, _, _, c in deviation_checks(spark, rows)}
+
+    assert found["E0"]["quantity_deviation"].reason == "insufficient_history"
+    assert found["E0"]["price_deviation"].reason == "insufficient_history"
+    assert found["R0"]["quantity_deviation"].context_level == "channel_stock"

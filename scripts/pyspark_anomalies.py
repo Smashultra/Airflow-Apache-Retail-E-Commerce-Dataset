@@ -31,6 +31,16 @@ DATA_RULES = (
     "cancel_sign_conflict", "negative_price_outside_adjustment",
     "invoice_multiple_customers", "invoice_inconsistent_header",
 )
+# Robust contextual thresholds: Iglewicz-Hoaglin modified z-score on log values,
+# combined with materiality limits fixed before looking at results (ISA 520).
+Z_THRESHOLD = 3.5
+MAD_CONSTANT = 0.6745
+QUANTITY_MIN_FOLD = 3.0
+PRICE_MIN_RELATIVE = 0.30
+ORDER_MIN_FOLD = 3.0
+MIN_CUSTOMER_STOCK_LINES = 5
+MIN_CUSTOMER_LINES = 20
+MIN_CUSTOMER_INVOICES = 5
 SEVERITY_HIGH_GBP = 1000.0
 SEVERITY_MEDIUM_GBP = 100.0
 RULES = BUSINESS_RULES + IQR_RULES
@@ -328,6 +338,112 @@ def add_data_checks(frame: DataFrame) -> DataFrame:
                reference_count=F.col("__invoice_lines"), severity=medium),
     )
     return frame.withColumn("__data_checks", F.array(*checks))
+
+
+def robust_baseline(frame: DataFrame, keys: list[str], log_value: Column, prefix: str) -> DataFrame:
+    """Exact median and median absolute deviation of log_value per key group."""
+    base = frame.select(*keys, log_value.alias("__value")).filter(
+        F.col("__value").isNotNull() & ~F.isnan("__value"))
+    for key in keys:
+        base = base.filter(F.col(key).isNotNull())
+    centre = base.groupBy(*keys).agg(
+        F.count("*").alias(f"{prefix}_n"),
+        F.percentile("__value", F.lit(0.5)).alias(f"{prefix}_med"),
+    )
+    spread = base.join(centre, keys).groupBy(*keys).agg(
+        F.percentile(F.abs(F.col("__value") - F.col(f"{prefix}_med")), F.lit(0.5)).alias(f"{prefix}_mad"))
+    return centre.join(spread, keys)
+
+
+def _first(choices: Sequence[tuple[Column, Column]]) -> Column:
+    result = None
+    for condition, value in choices:
+        result = F.when(condition, value) if result is None else result.when(condition, value)
+    return result
+
+
+def _deviation(x: Column, median: Column, mad: Column, z_threshold: float,
+               two_sided: bool) -> tuple[Column, Column, Column]:
+    """Return robust z (null when MAD = 0), statistical exceedance and fold change."""
+    z = F.when(mad > 0, F.lit(MAD_CONSTANT) * (x - median) / mad)
+    if two_sided:
+        exceeds = F.when(mad > 0, F.abs(z) > z_threshold).otherwise(x != median)
+    else:
+        exceeds = F.when(mad > 0, z > z_threshold).otherwise(x > median)
+    return z, exceeds, F.round(F.exp(x - median), 6)
+
+
+def add_deviation_checks(frame: DataFrame, z_threshold: float, min_samples: int) -> DataFrame:
+    """Contextual quantity/price checks with customer -> channel fallbacks."""
+    log_quantity, log_price = F.log(F.col("Quantity").cast("double")), F.log(F.col("UnitPrice"))
+    sales = frame.filter(
+        (F.col("record_type") == "sale") & F.col("InvoiceDate").isNotNull()
+        & F.col("__baseline_group").isNotNull() & F.col("__stock").isNotNull())
+    identified = sales.filter((F.col("__baseline_group") == "identified") & F.col("__customer").isNotNull())
+    pair, channel = ["__customer", "__stock"], ["__baseline_group", "__stock"]
+    quantity_channel = robust_baseline(sales, channel, log_quantity, "__q3")
+    stock_median = quantity_channel.filter(F.col("__baseline_group") == "identified").select(
+        "__stock", F.col("__q3_med").alias("__stock_qmed"))
+    quantity_customer = robust_baseline(
+        identified.join(stock_median, "__stock"), ["__customer"],
+        log_quantity - F.col("__stock_qmed"), "__q2")
+    result = (
+        frame.join(robust_baseline(identified, pair, log_quantity, "__q1"), pair, "left")
+        .join(quantity_channel, channel, "left")
+        .join(stock_median, "__stock", "left")
+        .join(quantity_customer, "__customer", "left")
+        .join(robust_baseline(identified, pair, log_price, "__p1"), pair, "left")
+        .join(robust_baseline(sales, channel, log_price, "__p3"), channel, "left")
+    )
+    identified_row = F.col("__baseline_group") == "identified"
+    base_reason = (
+        F.when(F.col("record_type") != "sale", "outside_scope")
+        .when(F.col("InvoiceDate").isNull(), "missing_invoice_date")
+        .when(F.col("__baseline_group").isNull(), "missing_invoice_no")
+    )
+
+    def levels(options: Sequence[tuple[Column, str, Column, str, Column]]):
+        pick = lambda part: _first([(use, part(option)) for option in options for use in [option[0]]])
+        level = pick(lambda o: F.lit(o[1]))
+        x = pick(lambda o: o[2])
+        median = pick(lambda o: F.col(f"{o[3]}_med"))
+        mad = pick(lambda o: F.col(f"{o[3]}_mad"))
+        count = pick(lambda o: F.col(f"{o[3]}_n"))
+        offset = pick(lambda o: o[4])
+        return level, x, median, mad, count, offset
+
+    zero = F.lit(0.0)
+    q_level, q_x, q_med, q_mad, q_n, q_offset = levels((
+        (identified_row & (F.col("__q1_n") >= MIN_CUSTOMER_STOCK_LINES), "customer_stock", log_quantity, "__q1", zero),
+        (identified_row & (F.col("__q2_n") >= MIN_CUSTOMER_LINES) & F.col("__stock_qmed").isNotNull(),
+         "customer", log_quantity - F.col("__stock_qmed"), "__q2", F.col("__stock_qmed")),
+        (F.col("__q3_n") >= min_samples, "channel_stock", log_quantity, "__q3", zero),
+    ))
+    q_z, q_exceeds, q_fold = _deviation(q_x, q_med, q_mad, z_threshold, two_sided=False)
+    q_expected = F.round(F.exp(q_med + q_offset), 6)
+    quantity_check = _check(
+        "business", "quantity_deviation",
+        base_reason.when(q_level.isNull(), "insufficient_history"),
+        q_exceeds & (q_fold >= QUANTITY_MIN_FOLD),
+        observed=F.col("Quantity"), context_level=q_level, reference_count=q_n,
+        reference_median=q_expected, reference_mad=q_mad, robust_z=q_z, fold_change=q_fold,
+        value_at_risk=F.round((F.col("Quantity") - q_expected) * F.col("UnitPrice"), 2),
+    )
+    p_level, p_x, p_med, p_mad, p_n, _ = levels((
+        (identified_row & (F.col("__p1_n") >= MIN_CUSTOMER_STOCK_LINES), "customer_stock", log_price, "__p1", zero),
+        (F.col("__p3_n") >= min_samples, "channel_stock", log_price, "__p3", zero),
+    ))
+    p_z, p_exceeds, p_fold = _deviation(p_x, p_med, p_mad, z_threshold, two_sided=True)
+    p_expected = F.round(F.exp(p_med), 6)
+    price_check = _check(
+        "business", "price_deviation",
+        base_reason.when(p_level.isNull(), "insufficient_history"),
+        p_exceeds & (F.abs(p_fold - 1) >= PRICE_MIN_RELATIVE),
+        observed=F.col("UnitPrice"), context_level=p_level, reference_count=p_n,
+        reference_median=p_expected, reference_mad=p_mad, robust_z=p_z, fold_change=p_fold,
+        value_at_risk=F.round(F.abs(F.col("UnitPrice") - p_expected) * F.col("Quantity"), 2),
+    )
+    return result.withColumn("__deviation_checks", F.array(quantity_check, price_check))
 
 
 def add_invoice_checks(context: DataFrame) -> DataFrame:
