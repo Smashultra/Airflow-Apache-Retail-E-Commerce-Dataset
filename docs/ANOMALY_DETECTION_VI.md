@@ -193,7 +193,7 @@ Thiếu CustomerID **không** phải data anomaly; đó là thuộc tính kênh.
 | `missing_required_field` | Completeness | Thiếu InvoiceNo/StockCode/InvoiceDate/Quantity/UnitPrice/Country | high |
 | `missing_description` | Completeness | Description thiếu | low |
 | `invalid_numeric_value` | Validity | Quantity null hoặc UnitPrice/line_value không hữu hạn | high |
-| `cancel_sign_conflict` | Consistency | Hóa đơn hủy nhưng Quantity ≥ 0 | medium |
+| `cancel_sign_conflict` | Consistency | Hóa đơn hủy nhưng Quantity ≥ 0, hoặc hóa đơn không hủy mà Quantity < 0 (trừ dòng kiểm kho và bút toán) | medium |
 | `negative_price_outside_adjustment` | Validity | UnitPrice < 0 mà không phải bút toán | high |
 | `invoice_multiple_customers` | Consistency | Hóa đơn có ≥ 2 CustomerID | medium |
 | `invoice_inconsistent_header` | Consistency | Hóa đơn có > 1 Country hoặc > 1 ngày | medium |
@@ -238,6 +238,7 @@ Severity theo value_at_risk: high ≥ 1,000 GBP, medium ≥ 100 GBP, còn lại 
 | 3 | Tầng 1: `DATA_RULES`, struct check mới (tier, context_level, robust_z, fold_change, value_at_risk, severity) | 7 data rule; thiếu CustomerID không bị flag; bút toán nợ xấu không bị tính giá âm | `test_data_rules_dimensions_and_severity` → pass; suite 9 passed |
 | 4 | `robust_baseline` (median/MAD chính xác trên log), `quantity_deviation`, `price_deviation` | Cấp baseline khách × mã → khách → kênh × mã; MAD = 0 do ngưỡng trọng yếu quyết định; identified không bao giờ dùng baseline lẻ | `test_quantity_hierarchy_levels`, `test_price_deviation_zero_mad_and_direction`, `test_identified_never_uses_retail_baseline` → pass; suite 12 passed |
 | 5 | `BUSINESS_RULES`, `add_operational_checks`: giá 0, kiểm kho, bút toán, hủy vượt mua | value_at_risk ước tính bằng giá bán trung vị của mã; `unmatched_return` loại mã phí và 30 ngày đầu | `test_operational_rules_value_at_risk`, `test_unmatched_return_collective` → pass; suite 14 passed |
+| 6 | Lắp `build_output` (14 check theo thứ tự `RULES`), `validate_output`, CLI `--z-threshold`, log theo tier/kênh/severity; bỏ IQR và rule cũ; cập nhật README | Thêm `localCheckpoint()` sau phân loại và sau deviation: một test 10 dòng giảm từ 94 s xuống 32 s, cả suite từ hơn 9 phút (kèm lỗi bộ nhớ broadcast) xuống 110 s | suite anomaly 13 passed |
 
 ## 9. Kết quả chạy đầy đủ
 

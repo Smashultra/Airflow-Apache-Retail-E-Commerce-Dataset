@@ -7,6 +7,7 @@ from pyspark.sql import SparkSession
 
 from scripts.pyspark_anomalies import (
     DATA_RULES,
+    RULES,
     add_base_columns,
     add_data_checks,
     add_deviation_checks,
@@ -49,8 +50,8 @@ def checks(record):
 def test_cli_rejects_bad_parameters_and_overlapping_paths():
     from scripts.pyspark_anomalies import validate_paths
 
-    for extra in (["--run-date", "2011-02-30"], ["--iqr-multiplier", "nan"],
-                  ["--iqr-multiplier", "0"], ["--min-samples", "1"]):
+    for extra in (["--run-date", "2011-02-30"], ["--z-threshold", "nan"],
+                  ["--z-threshold", "0"], ["--min-samples", "1"]):
         arguments = ["--input", "a", "--output", "b", "--run-date", "2011-12-10"]
         if extra[0] == "--run-date":
             arguments[-1] = extra[1]
@@ -59,7 +60,7 @@ def test_cli_rejects_bad_parameters_and_overlapping_paths():
         with pytest.raises(SystemExit):
             parse_args(arguments)
     args = parse_args(["--input", "a", "--output", "b", "--run-date", "2011-12-10"])
-    assert args.iqr_multiplier == 3.0 and args.min_samples == 30
+    assert args.z_threshold == 3.5 and args.min_samples == 30
     with pytest.raises(ValueError, match="overlap"):
         validate_paths("/tmp/data/input", "/tmp/data")
     with pytest.raises(ValueError, match="overlap"):
@@ -99,26 +100,29 @@ def test_contract_cutoff_quality_and_business_checks(spark):
     validate_output(source, result, "2011-12-10")
     found = {r.Description: r for r in result.collect()}
     assert len(found) == len(rows) - 2
-    assert checks(found["cancel"])["cancel_nonnegative_quantity"].status == "flagged"
-    assert checks(found["return"])["negative_quantity_non_cancel"].status == "flagged"
-    assert checks(found["negative price"])["negative_unit_price"].status == "flagged"
+    assert checks(found["cancel"])["cancel_sign_conflict"].status == "flagged"
+    assert checks(found["return"])["cancel_sign_conflict"].status == "flagged"
+    assert checks(found["negative price"])["negative_price_outside_adjustment"].status == "flagged"
     assert checks(found["zero invoice 1"])["all_zero_price_invoice"].status == "flagged"
-    assert checks(found["zero with null"])["all_zero_price_invoice"].status == "not_applied"
-    assert checks(found["zero with null"])["zero_price_in_priced_invoice"].status == "not_applied"
-    assert checks(found["zero with positive"])["zero_price_in_priced_invoice"].status == "flagged"
-    assert checks(found["first ID"])["multiple_customer_ids"].status == "flagged"
-    assert checks(found["one ID"])["multiple_customer_ids"].status == "not_applied"
+    assert checks(found["zero with positive"])["zero_price_sale_line"].status == "flagged"
+    assert checks(found["null price"])["invalid_numeric_value"].status == "flagged"
+    assert checks(found["first ID"])["invoice_multiple_customers"].status == "flagged"
+    assert checks(found["one ID"])["invoice_multiple_customers"].status == "not_applied"
     assert "missing_customer_id" in found["missing ID"].data_quality_flags
+    assert found["missing ID"].data_anomaly_flags == []
     assert "invalid_unit_price" in found["infinite price"].data_quality_flags
     assert found["infinite price"].line_value is None
     assert found["overflow value"].line_value is None
     assert "invalid_line_value" in found["overflow value"].data_quality_flags
     assert "invalid_unit_price" not in found["overflow value"].data_quality_flags
-    assert found["missing date"].assessment_status == "not_flagged"
-    assert checks(found["missing date"])["high_quantity"].reason == "missing_invoice_date"
-    assert checks(found[None])["cancel_nonnegative_quantity"].reason == "missing_invoice_no"
-    assert found[None].assessment_status == "not_assessable"
-    assert all(len(r.check_results) == 9 for r in found.values())
+    assert checks(found["overflow value"])["invalid_numeric_value"].status == "flagged"
+    assert checks(found["missing date"])["missing_required_field"].status == "flagged"
+    assert checks(found["missing date"])["quantity_deviation"].reason == "missing_invoice_date"
+    assert checks(found[None])["cancel_sign_conflict"].reason == "missing_invoice_no"
+    assert found[None].data_anomaly_flags == [
+        "missing_required_field", "missing_description", "invalid_numeric_value"]
+    assert found[None].max_severity == "high"
+    assert all(len(r.check_results) == len(RULES) == 14 for r in found.values())
 
 
 def test_whitespace_only_identifiers_and_text_are_missing(spark):
@@ -133,8 +137,8 @@ def test_whitespace_only_identifiers_and_text_are_missing(spark):
     for record in records:
         assert set(("missing_invoice_no", "missing_stock_code", "missing_description",
                     "missing_customer_id", "missing_country")).issubset(record.data_quality_flags)
-        assert checks(record)["zero_price_in_priced_invoice"].reason == "missing_invoice_no"
-        assert checks(record)["multiple_customer_ids"].reason == "missing_invoice_no"
+        assert checks(record)["cancel_sign_conflict"].reason == "missing_invoice_no"
+        assert checks(record)["invoice_multiple_customers"].reason == "missing_invoice_no"
 
 
 def test_description_context_uses_two_distinct_invoices_and_same_stock(spark):
@@ -175,50 +179,26 @@ def test_description_context_uses_two_distinct_invoices_and_same_stock(spark):
     assert result.count() == len(rows) - 2
 
 
-def test_exact_iqr_boundaries_and_exclusions(spark):
-    rows = []
-    for stock, values in (("101", [1, 2, 3, 4, 20]), ("102", [1, 2, 3, 4, 10])):
-        for index, quantity in enumerate(values):
-            rows.append(row(f"{stock}{index}", stock, f"{stock}-{index}", quantity,
-                            customer=None if quantity == 20 else "1"))
-    for index, price in enumerate((1.0, 2.0, 3.0, 4.0, 20.0)):
-        rows.append(row(f"103{index}", "103", f"103-{index}", price=price))
-    rows += [row("CCANCEL", "101", "cancelled", 100),
-             row("SERVICE", "101", "PACKING CHARGE", 100),
-             row("NULLDATE", "101", "no date", 100, when=None)]
-    source = spark.createDataFrame(rows, TRANSACTION_SCHEMA)
-    result = build_output(source, "2011-12-10", min_samples=5)
-    found = {r.Description: r for r in result.collect()}
-    high = checks(found["101-4"])["high_quantity"]
-    assert (high.status, high.reference_count, high.q1, high.q3, high.upper_bound) == (
-        "flagged", 5, 2.0, 4.0, 10.0)
-    assert checks(found["102-4"])["high_quantity"].status == "not_flagged"
-    assert checks(found["101-4"])["high_line_value"].status == "flagged"
-    assert checks(found["101-4"])["high_unit_price"].reason == "zero_iqr"
-    assert checks(found["103-4"])["high_unit_price"].status == "flagged"
-    assert checks(found["no date"])["high_quantity"].reason == "missing_invoice_date"
-    assert checks(found["PACKING CHARGE"])["high_quantity"].reason == "service_or_special_code"
-    assert checks(found["101-4"])["high_quantity"].observed_value == 20.0
-    assert "missing_customer_id" in found["101-4"].data_quality_flags
-    sparse = build_output(source, "2011-12-10", min_samples=30)
-    assert checks(next(r for r in sparse.collect() if r.Description == "101-4"))["high_quantity"].reason == "insufficient_product_samples"
-
-
-def test_exact_interpolation_minimum_30_and_duplicate_rows(spark):
-    rows = [row(str(index), "301", "sample", quantity=index) for index in range(1, 30)]
-    rows.append(row("30", "301", "sample", quantity=100))
-    rows.extend([row("DUP", "302", "same"), row("DUP", "302", "same")])
+def test_output_schema_rule_order_and_summary(spark):
+    rows = [row(f"N{i}", "50E", "steady", 10, 2.0, "Q") for i in range(6)]
+    rows += [row("N6", "50E", "spike", 100, 2.0, "Q"),
+             row("DUP", "50E", "duplicate", 10, 2.0, "Q"), row("DUP", "50E", "duplicate", 10, 2.0, "Q"),
+             row("N7", "50E", None, 10, 2.0, "Q")]
     source = spark.createDataFrame(rows, TRANSACTION_SCHEMA)
     result = build_output(source, "2011-12-10")
     validate_output(source, result, "2011-12-10")
+    found = {r.Description: r for r in result.collect()}
+
     assert result.count() == len(rows)
-    assert result.filter(result.InvoiceNo == "DUP").count() == 2
-    high = checks(next(r for r in result.collect() if r.InvoiceNo == "30"))["high_quantity"]
-    assert high.reference_count == 30
-    assert high.q1 == 8.25 and high.q3 == 22.75
-    assert high.upper_bound == 66.25 and high.status == "flagged"
-    reduced = build_output(spark.createDataFrame(rows[:-3], TRANSACTION_SCHEMA), "2011-12-10")
-    assert checks(next(r for r in reduced.collect() if r.InvoiceNo == "29"))["high_quantity"].reason == "insufficient_product_samples"
+    assert all([c.rule for c in r.check_results] == list(RULES) for r in found.values())
+    spike = found["spike"]
+    assert spike.business_anomaly_flags == ["quantity_deviation"]
+    assert spike.anomaly_flags == spike.data_anomaly_flags + spike.business_anomaly_flags
+    assert spike.max_severity == "medium" and spike.assessment_status == "flagged"
+    assert (spike.record_type, spike.channel, spike.has_dotcom_postage) == ("sale", "identified", False)
+    assert found[None].data_anomaly_flags == ["missing_description"] and found[None].max_severity == "low"
+    assert found["steady"].assessment_status == "not_flagged" and found["steady"].max_severity is None
+    assert found["duplicate"].z_threshold == 3.5
 
 
 def test_empty_and_partition_round_trip(spark, tmp_path):
@@ -227,6 +207,7 @@ def test_empty_and_partition_round_trip(spark, tmp_path):
     empty = spark.createDataFrame([], TRANSACTION_SCHEMA)
     result = build_output(empty, "2011-12-10")
     validate_output(empty, result, "2011-12-10")
+    assert {"record_type", "channel", "max_severity", "data_anomaly_flags"}.issubset(result.columns)
     output_root = str(tmp_path / "results")
     validate_paths(str(tmp_path / "input"), output_root)
     first = write_results(result, output_root, "2011-12-10")

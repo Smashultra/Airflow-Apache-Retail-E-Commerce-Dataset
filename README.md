@@ -34,13 +34,18 @@ RFM input excludes `StockCode` values `POST`, `M`, `DOT`, `BANK CHARGES`, `C2`, 
 
 ## Retrospective anomaly checks
 
-The standalone PySpark detector reads `data/audit/anomalies.parquet/` and preserves every row before `--run-date`, plus rows with a missing invoice date. It evaluates six invoice/business checks and upper product-level IQR checks for quantity, unit price, and line value. IQR references use the same pre-cutoff history, positive non-cancelled sales, at least 30 eligible rows per stock code, and a positive IQR; no global fallback is used. Missing CustomerID does not exclude a row. Keyword matches are context only, using same-stock product names seen on at least two distinct positive sales invoices.
+The PySpark detector reads `data/audit/anomalies.parquet/` and preserves every row before `--run-date`, plus rows with a missing invoice date. It first classifies each row (`record_type`: sale, cancellation, fee/service, inventory adjustment, accounting adjustment, zero-price line) and each invoice (`channel`: identified customer, `retail_web` with DOTCOM postage, other unidentified retail, internal). It then evaluates 14 rules in two tiers:
+
+- Tier 1, data anomalies (ISO/IEC 25012 / DAMA dimensions): missing required fields, missing description, invalid numbers, sign conflicts, negative prices outside accounting entries, multiple customers or inconsistent headers per invoice. A missing CustomerID is a channel attribute, not a data anomaly.
+- Tier 2, business anomalies (point, contextual, collective): quantity and price deviations against the customer's own history, falling back to the channel and product; zero-price lines; stock-count adjustments; accounting entries; returns exceeding purchases.
+
+Contextual checks use the modified z-score on log values (median/MAD, limit `--z-threshold`, default 3.5) together with materiality limits (quantity ×3, price ±30%). Each flag carries `value_at_risk` in GBP and a severity. Invoice totals are assessed separately at order level. Rules, evidence and results are documented in [docs/ANOMALY_DETECTION_VI.md](docs/ANOMALY_DETECTION_VI.md).
 
 ```powershell
 docker compose run --rm --no-deps airflow-scheduler bash -c 'spark-submit --master local[2] --driver-memory 3g /opt/airflow/scripts/pyspark_anomalies.py --input /opt/airflow/data/audit/anomalies.parquet --output /opt/airflow/data/audit/anomaly_results --run-date 2011-12-10'
 ```
 
-The job writes `data/audit/anomaly_results/run_date=2011-12-10/`; rerunning replaces only that date. The example's two workers and 3 GB driver heap were verified with Docker assigned about 8 GB; the default 1 GB heap ran out of memory on the full dataset. `--iqr-multiplier` defaults to `3.0` and `--min-samples` to `30`. Results retain the eight source columns and include `data_quality_flags`, `context_flags`, nine ordered `check_results` with status/reason/evidence, `anomaly_flags`, and `assessment_status`. A flagged row is a review candidate, not a fraud finding. The cutoff and thresholds are retrospective, not validated for online scoring.
+The job writes `data/audit/anomaly_results/run_date=2011-12-10/`; rerunning replaces only that date. The example's two workers and 3 GB driver heap were verified with Docker assigned about 8 GB. `--min-samples` (default `30`) is the minimum channel-level history per product. Results retain the eight source columns and add `record_type`, `channel`, `check_results` (14 ordered checks with tier, status, reason, baseline level, robust z, fold change, value at risk and severity), `data_anomaly_flags`, `business_anomaly_flags`, `anomaly_flags`, `max_severity` and `assessment_status`. A flagged row is a review candidate, not a fraud finding. Baselines are retrospective and in-sample, not validated for online scoring.
 
 ## Project structure
 

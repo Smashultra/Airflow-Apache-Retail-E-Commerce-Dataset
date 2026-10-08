@@ -19,12 +19,6 @@ else:  # spark-submit executes the file from scripts/ without a package.
 
 logger = logging.getLogger("retail_anomalies")
 REFERENCE_MODE = "retrospective_before_run_date"
-LEGACY_BUSINESS_RULES = (
-    "cancel_nonnegative_quantity", "negative_quantity_non_cancel",
-    "negative_unit_price", "zero_price_in_priced_invoice",
-    "all_zero_price_invoice", "multiple_customer_ids",
-)
-IQR_RULES = ("high_quantity", "high_unit_price", "high_line_value")
 # Tier 1 data rules, each tied to an ISO/IEC 25012 / DAMA quality dimension.
 DATA_RULES = (
     "missing_required_field", "missing_description", "invalid_numeric_value",
@@ -50,7 +44,7 @@ BUSINESS_RULES = (
 RETURN_WINDOW_DAYS = 30
 SEVERITY_HIGH_GBP = 1000.0
 SEVERITY_MEDIUM_GBP = 100.0
-RULES = LEGACY_BUSINESS_RULES + IQR_RULES
+RULES = DATA_RULES + BUSINESS_RULES
 # Match the corrected full-word expressions in EDA_Anomalies.ipynb.
 KEYWORD_PATTERNS = (
     ("stock_words", r"\b(?:CHECK(?:ED|ING|S)?|ADJUST(?:ED|MENT|MENTS|ING)?|COUNTED|STOCK|HISTORIC|FOUND|TEST(?:ING|ED|S)?)\b"),
@@ -65,7 +59,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--input", required=True, help="Anomaly-input Parquet directory")
     parser.add_argument("--output", required=True, help="Result root directory")
     parser.add_argument("--run-date", required=True, help="Exclusive YYYY-MM-DD cutoff")
-    parser.add_argument("--iqr-multiplier", type=float, default=3.0)
+    parser.add_argument("--z-threshold", type=float, default=Z_THRESHOLD,
+                        help="Modified z-score limit for contextual checks")
     parser.add_argument("--min-samples", type=int, default=30)
     args = parser.parse_args(argv)
     try:
@@ -73,8 +68,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             raise ValueError
     except ValueError:
         parser.error("--run-date must be a valid YYYY-MM-DD date")
-    if not math.isfinite(args.iqr_multiplier) or args.iqr_multiplier <= 0:
-        parser.error("--iqr-multiplier must be finite and positive")
+    if not math.isfinite(args.z_threshold) or args.z_threshold <= 0:
+        parser.error("--z-threshold must be finite and positive")
     if args.min_samples < 2:
         parser.error("--min-samples must be at least 2")
     return args
@@ -125,26 +120,6 @@ def _flags(items: Sequence[tuple[str, Column]]) -> Column:
     return F.filter(
         F.array(*[F.when(condition, F.lit(name)) for name, condition in items]),
         lambda value: value.isNotNull(),
-    )
-
-
-def _legacy_check(rule: str, reason: Column, flagged: Column,
-           observed: Column | None = None, reference_count: Column | None = None,
-           q1: Column | None = None, q3: Column | None = None,
-           upper_bound: Column | None = None) -> Column:
-    null_double, null_long = F.lit(None).cast("double"), F.lit(None).cast("long")
-    observed = observed.cast("double") if observed is not None else null_double
-    observed = F.when(_finite(observed), observed).otherwise(null_double)
-    return F.struct(
-        F.lit(rule).alias("rule"),
-        F.when(reason.isNotNull(), "not_applied")
-        .when(flagged, "flagged").otherwise("not_flagged").alias("status"),
-        reason.cast("string").alias("reason"),
-        observed.alias("observed_value"),
-        (reference_count.cast("long") if reference_count is not None else null_long).alias("reference_count"),
-        (q1.cast("double") if q1 is not None else null_double).alias("q1"),
-        (q3.cast("double") if q3 is not None else null_double).alias("q3"),
-        (upper_bound.cast("double") if upper_bound is not None else null_double).alias("upper_bound"),
     )
 
 
@@ -331,7 +306,10 @@ def add_data_checks(frame: DataFrame) -> DataFrame:
         _check("data", DATA_RULES[3],
                F.when(missing_invoice, "missing_invoice_no")
                .when(F.col("Quantity").isNull(), "invalid_numeric_value"),
-               F.col("__cancel") & (F.col("Quantity") >= 0), observed=F.col("Quantity"), severity=medium),
+               (F.col("__cancel") & (F.col("Quantity") >= 0))
+               | (~F.col("__cancel") & (F.col("Quantity") < 0)
+                  & ~F.col("record_type").isin("inventory_adjustment", "accounting_adjustment")),
+               observed=F.col("Quantity"), severity=medium),
         _check("data", DATA_RULES[4], F.when(~F.col("__valid_price"), "invalid_numeric_value"),
                (F.col("UnitPrice") < 0) & (F.col("record_type") != "accounting_adjustment"),
                observed=F.col("UnitPrice"), severity=high),
@@ -499,115 +477,37 @@ def add_operational_checks(frame: DataFrame) -> DataFrame:
     return result.withColumn("__operational_checks", F.array(*checks))
 
 
-def add_invoice_checks(context: DataFrame) -> DataFrame:
-    valid_price = F.col("__valid_price")
-    invoice_summary = (
-        context.filter(F.col("__invoice").isNotNull()).groupBy("__invoice")
-        .agg(
-            F.count("*").alias("__invoice_lines"),
-            F.sum(F.when(valid_price, 1).otherwise(0)).alias("__priced_lines"),
-            F.sum(F.when(valid_price & (F.col("UnitPrice") > 0), 1).otherwise(0)).alias("__positive_price_lines"),
-            F.sum(F.when(valid_price & (F.col("UnitPrice") == 0), 1).otherwise(0)).alias("__zero_price_lines"),
-            F.countDistinct("__customer").alias("__customer_count"),
-            F.count("__customer").alias("__identified_lines"),
-        )
-    )
-    result = context.join(invoice_summary, "__invoice", "left")
-    missing_invoice = F.col("__invoice").isNull()
-    valid_quantity = F.col("Quantity").isNotNull()
-    all_prices = F.col("__priced_lines") == F.col("__invoice_lines")
-    any_positive = F.col("__positive_price_lines") > 0
-    multiple_ids = F.col("__customer_count") >= 2
-    all_ids = F.col("__identified_lines") == F.col("__invoice_lines")
-    checks = (
-        _legacy_check(LEGACY_BUSINESS_RULES[0],
-               F.when(missing_invoice, "missing_invoice_no").when(~valid_quantity, "invalid_numeric_value"),
-               F.col("__cancel") & (F.col("Quantity") >= 0), F.col("Quantity")),
-        _legacy_check(LEGACY_BUSINESS_RULES[1],
-               F.when(missing_invoice, "missing_invoice_no").when(~valid_quantity, "invalid_numeric_value"),
-               ~F.col("__cancel") & (F.col("Quantity") < 0), F.col("Quantity")),
-        _legacy_check(LEGACY_BUSINESS_RULES[2],
-               F.when(~valid_price, "invalid_numeric_value"), F.col("UnitPrice") < 0, F.col("UnitPrice")),
-        _legacy_check(LEGACY_BUSINESS_RULES[3],
-               F.when(missing_invoice, "missing_invoice_no")
-               .when(~valid_price, "invalid_numeric_value")
-               .when(~any_positive & ~all_prices, "incomplete_invoice_prices"),
-               (F.col("UnitPrice") == 0) & any_positive,
-               F.col("UnitPrice"), F.col("__invoice_lines")),
-        _legacy_check(LEGACY_BUSINESS_RULES[4],
-               F.when(missing_invoice, "missing_invoice_no")
-               .when(~all_prices, "incomplete_invoice_prices"),
-               F.col("__zero_price_lines") == F.col("__invoice_lines"),
-               F.col("UnitPrice"), F.col("__invoice_lines")),
-        _legacy_check(LEGACY_BUSINESS_RULES[5],
-               F.when(missing_invoice, "missing_invoice_no")
-               .when(~multiple_ids & ~all_ids, "incomplete_customer_ids"),
-               multiple_ids, F.col("__customer_count"), F.col("__invoice_lines")),
-    )
-    return result.withColumn("__business_checks", F.array(*checks))
-
-
-def add_product_iqr_checks(invoice_rows: DataFrame, multiplier: float, min_samples: int) -> DataFrame:
-    eligible = (
-        F.col("InvoiceDate").isNotNull() & F.col("__invoice").isNotNull()
-        & F.col("__stock").isNotNull() & ~F.col("__cancel")
-        & (F.col("Quantity") > 0) & F.col("__valid_price")
-        & (F.col("UnitPrice") > 0) & (F.col("line_value") > 0)
-        & ~F.col("__service") & ~F.col("__special")
-    )
-    product_stats = (
-        invoice_rows.filter(eligible).groupBy("__stock")
-        .agg(
-            F.count("*").alias("__reference_count"),
-            F.expr("percentile(Quantity, array(0.25, 0.75))").alias("__quantity_quartiles"),
-            F.expr("percentile(UnitPrice, array(0.25, 0.75))").alias("__price_quartiles"),
-            F.expr("percentile(line_value, array(0.25, 0.75))").alias("__value_quartiles"),
-        )
-    )
-    result = invoice_rows.join(product_stats, "__stock", "left")
-    numeric_valid = F.col("Quantity").isNotNull() & F.col("__valid_price") & F.col("line_value").isNotNull()
-    base_reason = (
-        F.when(F.col("InvoiceDate").isNull(), "missing_invoice_date")
-        .when(F.col("__invoice").isNull(), "missing_invoice_no")
-        .when(F.col("__stock").isNull(), "missing_stock_code")
-        .when(~numeric_valid, "invalid_numeric_value")
-        .when(F.col("__cancel") | (F.col("Quantity") <= 0)
-              | (F.col("UnitPrice") <= 0) | (F.col("line_value") <= 0), "outside_sales_scope")
-        .when(F.col("__service") | F.col("__special"), "service_or_special_code")
-        .when(F.coalesce(F.col("__reference_count"), F.lit(0)) < min_samples,
-              "insufficient_product_samples")
-    )
-    checks = []
-    for rule, observed_name, quartiles_name in zip(
-        IQR_RULES, ("Quantity", "UnitPrice", "line_value"),
-        ("__quantity_quartiles", "__price_quartiles", "__value_quartiles"),
-    ):
-        observed = F.col(observed_name).cast("double")
-        q1, q3 = F.col(quartiles_name)[0], F.col(quartiles_name)[1]
-        spread = q3 - q1
-        upper = q3 + F.lit(multiplier) * spread
-        reason = base_reason.when(spread <= 0, "zero_iqr").when(~_finite(upper), "nonfinite_threshold")
-        checks.append(_legacy_check(rule, reason, observed > upper, observed,
-                             F.col("__reference_count"), q1, q3, upper))
-    return result.withColumn("__iqr_checks", F.array(*checks))
+def _rules_with(checks: str, tier: str) -> Column:
+    return F.transform(
+        F.filter(checks, lambda check: (check.tier == tier) & (check.status == "flagged")),
+        lambda check: check.rule)
 
 
 def build_output(transactions: DataFrame, run_date: str,
-                 iqr_multiplier: float = 3.0, min_samples: int = 30) -> DataFrame:
-    """Evaluate history with its own product reference population."""
+                 z_threshold: float = Z_THRESHOLD, min_samples: int = 30) -> DataFrame:
+    """Classify rows, then evaluate tier-1 data and tier-2 business rules."""
     validate_input_contract(transactions)
     history = select_history(transactions, run_date)
-    base = add_base_columns(history)
-    context = add_description_context(base)
-    invoice_rows = add_invoice_checks(context)
-    scored = add_product_iqr_checks(invoice_rows, iqr_multiplier, min_samples)
-    scored = scored.withColumn("check_results", F.concat(F.col("__business_checks"), F.col("__iqr_checks")))
-    scored = scored.withColumn(
-        "anomaly_flags",
-        F.transform(F.filter("check_results", lambda check: check.status == "flagged"),
-                    lambda check: check.rule),
+    # Checkpoints cut the lineage: each baseline otherwise re-plans every upstream join.
+    typed = add_data_checks(add_record_context(add_invoice_summary(
+        add_description_context(add_base_columns(history))))).localCheckpoint()
+    deviation = add_deviation_checks(typed, z_threshold, min_samples).localCheckpoint()
+    scored = add_operational_checks(deviation)
+    scored = (
+        scored.withColumn("check_results", F.concat(
+            "__data_checks", "__deviation_checks", "__operational_checks"))
+        .withColumn("data_anomaly_flags", _rules_with("check_results", "data"))
+        .withColumn("business_anomaly_flags", _rules_with("check_results", "business"))
+        .withColumn("anomaly_flags", F.concat("data_anomaly_flags", "business_anomaly_flags"))
     )
+    severities = F.transform(F.filter("check_results", lambda check: check.status == "flagged"),
+                             lambda check: check.severity)
     scored = scored.withColumn(
+        "max_severity",
+        F.when(F.array_contains(severities, "high"), "high")
+        .when(F.array_contains(severities, "medium"), "medium")
+        .when(F.array_contains(severities, "low"), "low"),
+    ).withColumn(
         "assessment_status",
         F.when(F.size("anomaly_flags") > 0, "flagged")
         .when(F.exists("check_results", lambda check: check.status == "not_flagged"), "not_flagged")
@@ -617,10 +517,12 @@ def build_output(transactions: DataFrame, run_date: str,
         *TRANSACTION_SCHEMA.fieldNames(),
         F.lit(run_date).cast("date").alias("run_date"),
         F.lit(REFERENCE_MODE).alias("reference_mode"),
-        F.lit(iqr_multiplier).cast("double").alias("iqr_multiplier"),
+        F.lit(z_threshold).cast("double").alias("z_threshold"),
         F.lit(min_samples).cast("int").alias("min_samples"),
-        "line_value", "data_quality_flags", "context_flags",
-        "check_results", "anomaly_flags", "assessment_status",
+        "line_value", "record_type", "channel", "has_dotcom_postage",
+        "data_quality_flags", "context_flags", "check_results",
+        "data_anomaly_flags", "business_anomaly_flags", "anomaly_flags",
+        "max_severity", "assessment_status",
     )
 
 
@@ -628,18 +530,20 @@ def validate_output(transactions: DataFrame, result: DataFrame, run_date: str) -
     """Reject lost/duplicated source rows and malformed checks before writing."""
     history = select_history(transactions, run_date).select(*TRANSACTION_SCHEMA.fieldNames())
     original = result.select(*TRANSACTION_SCHEMA.fieldNames())
-    if history.count() != result.count() or not history.exceptAll(original).isEmpty() \
-            or not original.exceptAll(history).isEmpty():
+    if history.count() != result.count() or not history.exceptAll(original).isEmpty()             or not original.exceptAll(history).isEmpty():
         raise ValueError("Output does not preserve the input row multiset before cutoff")
     expected_rules = F.array(*[F.lit(rule) for rule in RULES])
     invalid = (
         F.col("run_date").isNull() | (F.col("run_date") != F.lit(run_date).cast("date"))
         | (F.transform("check_results", lambda check: check.rule) != expected_rules)
-        | F.exists("check_results", lambda check: ~check.status.isin("flagged", "not_flagged", "not_applied"))
+        | F.exists("check_results", lambda check: ~check.status.isin("flagged", "not_flagged", "not_applied")
+                   | ~check.tier.isin("data", "business")
+                   | ((check.status == "flagged") != check.severity.isNotNull()))
         | ~F.col("assessment_status").isin("flagged", "not_flagged", "not_assessable")
+        | F.col("record_type").isNull() | F.col("channel").isNull()
     )
     if not result.filter(invalid).isEmpty():
-        raise ValueError("Output contains invalid run date, status, or check order")
+        raise ValueError("Output contains invalid run date, status, severity, or check order")
 
 
 def write_results(result: DataFrame, output_root: str, run_date: str) -> str:
@@ -650,16 +554,20 @@ def write_results(result: DataFrame, output_root: str, run_date: str) -> str:
 
 
 def _log_results(result: DataFrame) -> None:
-    for record in result.groupBy("assessment_status").count().collect():
-        logger.info("assessment_status=%s rows=%s", record.assessment_status, record["count"])
+    for column in ("assessment_status", "max_severity", "channel", "record_type"):
+        for record in result.groupBy(column).count().collect():
+            logger.info("%s=%s rows=%s", column, record[column], record["count"])
     invoice = _normalized(F.col("InvoiceNo"))
     exploded = result.select(invoice.alias("invoice"), F.explode("check_results").alias("check"))
     for record in (
         exploded.filter(F.col("check.status") == "flagged")
-        .groupBy("check.rule").agg(F.count("*").alias("rows"), F.countDistinct("invoice").alias("invoices"))
+        .groupBy("check.tier", "check.rule").agg(
+            F.count("*").alias("rows"), F.countDistinct("invoice").alias("invoices"),
+            F.round(F.sum("check.value_at_risk"), 2).alias("value_at_risk"))
         .collect()
     ):
-        logger.info("flagged rule=%s rows=%s invoices=%s", record["rule"], record.rows, record.invoices)
+        logger.info("flagged tier=%s rule=%s rows=%s invoices=%s value_at_risk=%s",
+                    record["tier"], record["rule"], record.rows, record.invoices, record.value_at_risk)
     for record in (
         exploded.filter(F.col("check.status") == "not_applied")
         .groupBy("check.rule", "check.reason").count().collect()
@@ -683,7 +591,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         logger.info("input_rows=%s outside_cutoff_rows=%s missing_date_rows=%s",
                     source_count, source_count - history_count,
                     history.filter(F.col("InvoiceDate").isNull()).count())
-        result = build_output(transactions, args.run_date, args.iqr_multiplier,
+        result = build_output(transactions, args.run_date, args.z_threshold,
                               args.min_samples).cache()
         result.count()
         validate_output(transactions, result, args.run_date)
