@@ -25,6 +25,14 @@ BUSINESS_RULES = (
     "all_zero_price_invoice", "multiple_customer_ids",
 )
 IQR_RULES = ("high_quantity", "high_unit_price", "high_line_value")
+# Tier 1 data rules, each tied to an ISO/IEC 25012 / DAMA quality dimension.
+DATA_RULES = (
+    "missing_required_field", "missing_description", "invalid_numeric_value",
+    "cancel_sign_conflict", "negative_price_outside_adjustment",
+    "invoice_multiple_customers", "invoice_inconsistent_header",
+)
+SEVERITY_HIGH_GBP = 1000.0
+SEVERITY_MEDIUM_GBP = 100.0
 RULES = BUSINESS_RULES + IQR_RULES
 # Match the corrected full-word expressions in EDA_Anomalies.ipynb.
 KEYWORD_PATTERNS = (
@@ -103,7 +111,7 @@ def _flags(items: Sequence[tuple[str, Column]]) -> Column:
     )
 
 
-def _check(rule: str, reason: Column, flagged: Column,
+def _legacy_check(rule: str, reason: Column, flagged: Column,
            observed: Column | None = None, reference_count: Column | None = None,
            q1: Column | None = None, q3: Column | None = None,
            upper_bound: Column | None = None) -> Column:
@@ -120,6 +128,44 @@ def _check(rule: str, reason: Column, flagged: Column,
         (q1.cast("double") if q1 is not None else null_double).alias("q1"),
         (q3.cast("double") if q3 is not None else null_double).alias("q3"),
         (upper_bound.cast("double") if upper_bound is not None else null_double).alias("upper_bound"),
+    )
+
+
+def _severity_from_value(value_at_risk: Column) -> Column:
+    return (F.when(value_at_risk >= SEVERITY_HIGH_GBP, "high")
+            .when(value_at_risk >= SEVERITY_MEDIUM_GBP, "medium").otherwise("low"))
+
+
+def _check(tier: str, rule: str, reason: Column, flagged: Column, *,
+           observed: Column | None = None, context_level: Column | None = None,
+           reference_count: Column | None = None, reference_median: Column | None = None,
+           reference_mad: Column | None = None, robust_z: Column | None = None,
+           fold_change: Column | None = None, value_at_risk: Column | None = None,
+           severity: Column | None = None) -> Column:
+    """One rule outcome; severity comes from value_at_risk unless given."""
+    def number(value: Column | None) -> Column:
+        value = value.cast("double") if value is not None else F.lit(None).cast("double")
+        return F.when(_finite(value), value)
+
+    status = (F.when(reason.isNotNull(), "not_applied")
+              .when(F.coalesce(flagged, F.lit(False)), "flagged").otherwise("not_flagged"))
+    value = number(value_at_risk)
+    return F.struct(
+        F.lit(tier).alias("tier"),
+        F.lit(rule).alias("rule"),
+        status.alias("status"),
+        reason.cast("string").alias("reason"),
+        (context_level if context_level is not None else F.lit(None)).cast("string").alias("context_level"),
+        number(observed).alias("observed_value"),
+        (reference_count.cast("long") if reference_count is not None
+         else F.lit(None).cast("long")).alias("reference_count"),
+        number(reference_median).alias("reference_median"),
+        number(reference_mad).alias("reference_mad"),
+        number(robust_z).alias("robust_z"),
+        number(fold_change).alias("fold_change"),
+        value.alias("value_at_risk"),
+        F.when(status == "flagged", severity if severity is not None else _severity_from_value(value))
+        .cast("string").alias("severity"),
     )
 
 
@@ -249,6 +295,41 @@ def add_record_context(frame: DataFrame) -> DataFrame:
     )
 
 
+def add_data_checks(frame: DataFrame) -> DataFrame:
+    """Tier 1: completeness, validity and consistency of the recorded data."""
+    no_reason = F.lit(None).cast("string")
+    missing_invoice = F.col("__invoice").isNull()
+    multiple_ids = F.col("__customer_count") >= 2
+    all_ids = F.col("__identified_lines") == F.col("__invoice_lines")
+    high, medium, low = F.lit("high"), F.lit("medium"), F.lit("low")
+    checks = (
+        _check("data", DATA_RULES[0], no_reason,
+               missing_invoice | F.col("__stock").isNull() | F.col("InvoiceDate").isNull()
+               | F.col("Quantity").isNull() | F.col("UnitPrice").isNull()
+               | _normalized(F.col("Country")).isNull(), severity=high),
+        _check("data", DATA_RULES[1], no_reason, F.col("__description").isNull(), severity=low),
+        _check("data", DATA_RULES[2], no_reason,
+               F.col("Quantity").isNull() | ~F.col("__valid_price") | F.col("line_value").isNull(),
+               severity=high),
+        _check("data", DATA_RULES[3],
+               F.when(missing_invoice, "missing_invoice_no")
+               .when(F.col("Quantity").isNull(), "invalid_numeric_value"),
+               F.col("__cancel") & (F.col("Quantity") >= 0), observed=F.col("Quantity"), severity=medium),
+        _check("data", DATA_RULES[4], F.when(~F.col("__valid_price"), "invalid_numeric_value"),
+               (F.col("UnitPrice") < 0) & (F.col("record_type") != "accounting_adjustment"),
+               observed=F.col("UnitPrice"), severity=high),
+        _check("data", DATA_RULES[5],
+               F.when(missing_invoice, "missing_invoice_no")
+               .when(~multiple_ids & ~all_ids, "incomplete_customer_ids"),
+               multiple_ids, observed=F.col("__customer_count"),
+               reference_count=F.col("__invoice_lines"), severity=medium),
+        _check("data", DATA_RULES[6], F.when(missing_invoice, "missing_invoice_no"),
+               (F.col("__country_count") > 1) | (F.col("__date_count") > 1),
+               reference_count=F.col("__invoice_lines"), severity=medium),
+    )
+    return frame.withColumn("__data_checks", F.array(*checks))
+
+
 def add_invoice_checks(context: DataFrame) -> DataFrame:
     valid_price = F.col("__valid_price")
     invoice_summary = (
@@ -270,26 +351,26 @@ def add_invoice_checks(context: DataFrame) -> DataFrame:
     multiple_ids = F.col("__customer_count") >= 2
     all_ids = F.col("__identified_lines") == F.col("__invoice_lines")
     checks = (
-        _check(BUSINESS_RULES[0],
+        _legacy_check(BUSINESS_RULES[0],
                F.when(missing_invoice, "missing_invoice_no").when(~valid_quantity, "invalid_numeric_value"),
                F.col("__cancel") & (F.col("Quantity") >= 0), F.col("Quantity")),
-        _check(BUSINESS_RULES[1],
+        _legacy_check(BUSINESS_RULES[1],
                F.when(missing_invoice, "missing_invoice_no").when(~valid_quantity, "invalid_numeric_value"),
                ~F.col("__cancel") & (F.col("Quantity") < 0), F.col("Quantity")),
-        _check(BUSINESS_RULES[2],
+        _legacy_check(BUSINESS_RULES[2],
                F.when(~valid_price, "invalid_numeric_value"), F.col("UnitPrice") < 0, F.col("UnitPrice")),
-        _check(BUSINESS_RULES[3],
+        _legacy_check(BUSINESS_RULES[3],
                F.when(missing_invoice, "missing_invoice_no")
                .when(~valid_price, "invalid_numeric_value")
                .when(~any_positive & ~all_prices, "incomplete_invoice_prices"),
                (F.col("UnitPrice") == 0) & any_positive,
                F.col("UnitPrice"), F.col("__invoice_lines")),
-        _check(BUSINESS_RULES[4],
+        _legacy_check(BUSINESS_RULES[4],
                F.when(missing_invoice, "missing_invoice_no")
                .when(~all_prices, "incomplete_invoice_prices"),
                F.col("__zero_price_lines") == F.col("__invoice_lines"),
                F.col("UnitPrice"), F.col("__invoice_lines")),
-        _check(BUSINESS_RULES[5],
+        _legacy_check(BUSINESS_RULES[5],
                F.when(missing_invoice, "missing_invoice_no")
                .when(~multiple_ids & ~all_ids, "incomplete_customer_ids"),
                multiple_ids, F.col("__customer_count"), F.col("__invoice_lines")),
@@ -337,7 +418,7 @@ def add_product_iqr_checks(invoice_rows: DataFrame, multiplier: float, min_sampl
         spread = q3 - q1
         upper = q3 + F.lit(multiplier) * spread
         reason = base_reason.when(spread <= 0, "zero_iqr").when(~_finite(upper), "nonfinite_threshold")
-        checks.append(_check(rule, reason, observed > upper, observed,
+        checks.append(_legacy_check(rule, reason, observed > upper, observed,
                              F.col("__reference_count"), q1, q3, upper))
     return result.withColumn("__iqr_checks", F.array(*checks))
 

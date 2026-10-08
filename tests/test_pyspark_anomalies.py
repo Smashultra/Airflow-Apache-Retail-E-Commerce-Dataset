@@ -6,7 +6,9 @@ import pytest
 from pyspark.sql import SparkSession
 
 from scripts.pyspark_anomalies import (
+    DATA_RULES,
     add_base_columns,
+    add_data_checks,
     add_invoice_summary,
     add_record_context,
     build_output,
@@ -278,3 +280,48 @@ def test_record_type_priority_and_channels(spark):
         "no invoice": ("sale", "unknown", False),
         "null quantity": ("unclassified", "identified", False),
     }
+
+
+def data_checks(spark, rows):
+    frame = add_data_checks(classify(spark, rows))
+    return {r.Description: {c.rule: c for c in r["__data_checks"]} for r in frame.collect()}
+
+
+def test_data_rules_dimensions_and_severity(spark):
+    rows = [
+        row("900", "100", "clean", 2, 1.0, "5"),
+        row("901", "100", "clean retail", 2, 1.0, None),
+        row("902", "100", "no country", 1, 1.0, "5", country=None),
+        row("903", "100", None, 1, 1.0, "5"),
+        row("904", "100", "infinite", 1, float("inf"), "5"),
+        row("C905", "100", "bad cancel", 1, 1.0, "5"),
+        row("906", "100", "negative", 1, -2.0, "5"),
+        row("A907", "B", "Adjust bad debt", 1, -11062.06, None),
+        row("908", "100", "first id", 1, 1.0, "5"),
+        row("908", "100", "second id", 1, 1.0, "6"),
+        row("909", "100", "uk", 1, 1.0, "5", country="UK"),
+        row("909", "100", "france", 1, 1.0, "5", country="France"),
+        row("910", "100", "day one", 1, 1.0, "5", when=datetime(2011, 12, 8)),
+        row("910", "100", "day two", 1, 1.0, "5", when=datetime(2011, 12, 9)),
+    ]
+    found = data_checks(spark, rows)
+
+    def flagged(description):
+        return {rule: c.severity for rule, c in found[description].items() if c.status == "flagged"}
+
+    assert all(list(checks_) == list(DATA_RULES) for checks_ in found.values())
+    assert all(c.tier == "data" for checks_ in found.values() for c in checks_.values())
+    assert flagged("clean") == {}
+    assert flagged("clean retail") == {}
+    assert all(found["clean retail"][rule].status == "not_flagged" for rule in DATA_RULES[:5])
+    assert flagged("no country") == {"missing_required_field": "high"}
+    assert flagged(None) == {"missing_description": "low"}
+    assert flagged("infinite") == {"invalid_numeric_value": "high"}
+    assert found["infinite"]["negative_price_outside_adjustment"].reason == "invalid_numeric_value"
+    assert flagged("bad cancel") == {"cancel_sign_conflict": "medium"}
+    assert flagged("negative") == {"negative_price_outside_adjustment": "high"}
+    assert flagged("Adjust bad debt") == {}
+    assert flagged("first id") == {"invoice_multiple_customers": "medium"}
+    assert flagged("uk") == {"invoice_inconsistent_header": "medium"}
+    assert flagged("day two") == {"invoice_inconsistent_header": "medium"}
+    assert found["clean"]["cancel_sign_conflict"].severity is None
