@@ -2,7 +2,7 @@
 
 ## Two-tier anomaly rule base: final review fixes - 2026-10-09
 
-- Owner: Claude; branch `feature/anomaly-rule-base`. Not pushed or merged.
+- Owner: Claude. Branch `feature/anomaly-rule-base` was merged fast-forward into `main` and deleted at the user's request on 2026-10-09; the merged `main` passed the Docker suite (98 passed) and the host structure test, then was pushed to origin/main.
 - The fresh whole-branch review returned "with fixes" (0 Critical, 4 Important, 4 Minor; one Minor raised to Important). All five were fixed, each with a test that failed first:
   - Not-applied checks no longer carry evidence.
   - The customer-level quantity baseline needs a stock median from >= 30 identified lines.
@@ -17,7 +17,7 @@
   - `assess_orders` channel uses `F.trim`, not `_normalized`.
   - The doc writes |ΣQ| but the code compares Σ|Q|.
   - No test covers `outside_scope` orders.
-- Open decisions for the user: the doc 9.3 recalibration options; merge or PR of the branch. The DAG `detect_anomalies` stage has still not been re-run end-to-end through Airflow.
+- Open decisions for the user: the doc 9.3 recalibration options. The DAG `detect_anomalies` stage has still not been re-run end-to-end through Airflow.
 
 ## Two-tier anomaly rule base - 2026-10-08
 
