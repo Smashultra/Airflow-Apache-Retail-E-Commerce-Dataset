@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "file:///opt/airflow/dags/retail_support/schemas/retail-lineage-v1.json",
+  "$defs": {
+    "RetailRunFacet": {
+      "type": "object",
+      "required": ["_producer", "_schemaURL", "metadata"],
+      "properties": {
+        "_producer": {"type": "string"},
+        "_schemaURL": {"type": "string"},
+        "metadata": {"type": "object"}
+      },
+      "additionalProperties": false
+    },
+    "RetailDatasetFacet": {
+      "type": "object",
+      "required": ["_producer", "_schemaURL", "metadata"],
+      "properties": {
+        "_producer": {"type": "string"},
+        "_schemaURL": {"type": "string"},
+        "metadata": {
+          "type": "object",
+          "required": ["physical_path"],
+          "properties": {"physical_path": {"type": "string"}},
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

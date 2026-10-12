@@ -25,6 +25,15 @@ Bản báo cáo chi tiết bằng tiếng Việt nằm tại [Thiết kế DAG b
 
 ## Trạng thái kết quả
 
+**Cập nhật 12/10/2026:** RFM và Anomaly tự kiểm tra, ghi publication marker
+và phát Asset độc lập ngay tại task của mình. notify_completion giữ all_success,
+đối soát hai marker rồi công bố snapshot tổng hợp. Marketing nghe RFM;
+Dashboard chỉ nghe RETAIL_SNAPSHOT_ASSET, không ghép event nhánh.
+Chi tiết ở [ASSET_SCHEDULING_VI.md](ASSET_SCHEDULING_VI.md). Full-data scheduler đã chạy
+ngày 11/10 theo [bằng chứng](RUN_EVIDENCE_20261011.md), nhưng dùng thiết kế
+phát cả ba Asset tại notify; chưa chạy lại scheduler full-data sau thay đổi này.
+Các đoạn trạng thái 06/10 bên dưới là ghi nhận lịch sử.
+
 Cập nhật 06/10/2026 đã giữ sáu task daily và chuyển KMeans sang load/transform, bổ sung DAG training ba task, model có phiên bản và bootstrap ETL-only; xem mục 6.1–6.3, 11.5 và 16.1 của [bản thiết kế](DAG_DESIGN_VI.md). 94 tests đã qua, gồm Spark lifecycle và kiểm tra metadata/DAG; Airflow import thành công cả hai DAG. Chưa chạy scheduler smoke hai DAG trên toàn dataset; bằng chứng scheduler cũ bên dưới thuộc baseline ngày 29/09.
 
 DAG chính thức đã có sáu task thực: EmptyOperator mở đầu, FileSensor mở rộng, ba SparkSubmitOperator và PythonOperator công bố kết quả. Code bổ sung partition/manifest, audit tổng đơn và nhãn inactivity. Kết quả kiểm thử và scheduler run nằm tại [IMPLEMENTATION_VI.md](IMPLEMENTATION_VI.md).

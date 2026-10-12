@@ -2,6 +2,22 @@
 
 Use `YYYY-MM-DD HH:mm UTC+07:00` in every decision heading.
 
+## 2026-10-12 12:51 UTC+07:00 - Independent branch publications and aggregate readiness
+
+- Status: Implemented per revised user architecture; supersedes the RFM-only split below. 54 focused tests and all four DAG imports/serialization passed.
+- Decision: Reuse one branch publication gate/operator implementation for RFM and Audit. Each branch advertises only its own validated immutable snapshot and does not wait for the other branch. Retry reuses the advertised generation; replacing it requires a new run.
+- Decision: Notify retains all_success, checks both markers and consistent ETL/context/model, publishes the existing completion manifest, and emits RETAIL_SNAPSHOT_ASSET plus the existing curated outlet. It emits neither branch Asset.
+- Decision: Dashboard subscribes only to aggregate readiness and verifies the exact completion manifest identified by the event. Remove AND scheduling and cross-stream event matching; Marketing remains RFM-only. No additional processing task, dataset copy, queue, or service.
+- Consequences: One branch may succeed and publish while the daily DAG fails; Dashboard cannot proceed before aggregate publication. New aggregate events are required after upgrade. Pool remains one slot; independence is not a parallel-runtime or latency claim. No full-data scheduler rerun yet.
+
+## 2026-10-12 12:28 UTC+07:00 - Publish RFM before whole-pipeline completion
+
+- Status: Implemented at the user's request; 42 focused tests and DAG import/serialization passed. Full-data scheduler evidence still predates this change.
+- Decision: Keep six daily tasks and consumer schedules. A SparkSubmitOperator subclass validates and freezes an RFM publication inside execute before emitting RFM. Final notify still gates curated/anomaly publication on both branches and the exact frozen RFM.
+- Decision: Give early events their own run-specific manifest and context/ETL/RFM hashes, rather than an unavailable completion manifest. Once advertised, the RFM snapshot cannot be replaced in that run; retry reuses it and changed inputs/generations require a new run.
+- Decision: Executive joins each final event to its matching early snapshot and ignores early-only orphans; never pairs different runs or generations. Keep legacy queued event pairs readable. Lineage follows the two actual publication points.
+- Consequences: Marketing can proceed despite Audit failure; the overall daily run still fails. Event delivery/scheduling is not instantaneous or exactly-once, pool remains one slot, and no 10–15 minute savings are claimed. Late audit recovery after an early event was consumed may need RFM event replay; no durable cross-run join service added.
+
 ## 2026-10-08 23:30 UTC+07:00 - Two-tier anomaly rule base
 
 - Status: Implemented on `feature/anomaly-rule-base` at the user's request; thresholds pending recalibration review.

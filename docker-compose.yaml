@@ -15,6 +15,14 @@ x-airflow-common: &airflow-common
     AIRFLOW_CONN_SPARK_DEFAULT: '{"conn_type":"spark","host":"local[2]"}'
     AIRFLOW_CONN_RETAIL_LANDING: '{"conn_type":"fs","extra":{"path":"/opt/airflow/data/raw/landing"}}'
     PYTHONPATH: /opt/airflow:/opt/airflow/scripts:/opt/airflow/dags
+    AIRFLOW__OPENLINEAGE__DISABLED: ${OPENLINEAGE_DISABLED:-false}
+    AIRFLOW__OPENLINEAGE__NAMESPACE: retail-local
+    AIRFLOW__OPENLINEAGE__EXTRACTORS: retail_support.lineage.RetailExtractor
+    AIRFLOW__OPENLINEAGE__TRANSPORT: '{"type":"file","log_file_path":"/opt/airflow/logs/openlineage","append":false}'
+    AIRFLOW__OPENLINEAGE__DISABLE_SOURCE_CODE: "true"
+    AIRFLOW__OPENLINEAGE__INCLUDE_FULL_TASK_INFO: "false"
+    AIRFLOW__OPENLINEAGE__SPARK_INJECT_PARENT_JOB_INFO: "false"
+    AIRFLOW__OPENLINEAGE__SPARK_INJECT_TRANSPORT_INFO: "false"
   volumes:
     - ./dags:/opt/airflow/dags
     - ./scripts:/opt/airflow/scripts

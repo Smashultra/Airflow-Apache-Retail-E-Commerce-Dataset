@@ -1,5 +1,12 @@
 # Thiết kế DAG bán lẻ: Airflow điều phối, PySpark xử lý
 
+**Cập nhật 12/10/2026 — hai nhánh công bố độc lập:** daily vẫn 6 task.
+RFM và Audit tự kiểm tra/ghi marker/phát Asset ở task của mình. notify giữ
+all_success, đối soát cùng snapshot và phát RETAIL_SNAPSHOT_ASSET (cùng
+curated Asset); không phát lại Asset nhánh. Marketing nghe RFM; Dashboard
+chỉ nghe snapshot tổng hợp, không dùng RFM AND anomaly.
+Chi tiết: [ASSET_SCHEDULING_VI.md](ASSET_SCHEDULING_VI.md).
+
 Ngày thiết kế: 28/09/2026; cập nhật và triển khai 06/10/2026: tách daily scoring và training định kỳ. **Daily nạp model đã lưu; DAG training riêng thực hiện fit.** Giữ sáu task daily, ETL/audit và context/manifest; thêm một DAG training, không viết lại pipeline dữ liệu. Xem [kết quả triển khai](IMPLEMENTATION_VI.md) để phân biệt kiểm thử fixture, import DAG và scheduler run trên dữ liệu thật.
 
 Tài liệu dựa trên `airflow_subject.docx`, sách *Data Pipelines with Apache Airflow — Orchestration for Data and AI, Second Edition* của Julian de Ruiter, Ismael Cabral, Kris Geusebroek, Daniel van der Ende và Bas Harenslak, cùng code hiện tại của repository. Sách là căn cứ về kỹ thuật điều phối; các ngưỡng kinh doanh và cấu hình tài nguyên dưới đây là lựa chọn của project, không gán cho tác giả sách.
@@ -122,7 +129,7 @@ Callable điều phối trong Sensor/PythonOperator chỉ đọc manifest nhỏ,
 | SparkSubmitOperator | Chọn cho cả 3 job Spark | Đúng đề, provider có sẵn, lỗi spark-submit được phản ánh vào task |
 | BashOperator chạy Spark | Không chọn mặc định | Dễ lỗi quoting/Jinja trên lệnh dài; phù hợp dự phòng chứ không cần ở đây |
 | DockerOperator | Chưa cần | Image Airflow đã có Spark/Java; thêm socket và image/job riêng tăng vận hành |
-| Asset-aware scheduling | Chưa dùng | Bài yêu cầu daily theo ngày nghiệp vụ; 1 DAG là đủ để biểu diễn phụ thuộc |
+| Asset-aware scheduling | Đã dùng cho hai consumer | Marketing nhận RFM sớm; Dashboard chờ Asset tổng hợp đã đối soát |
 | TaskGroup / dynamic mapping | Chưa dùng | Chỉ 6 task cố định; mỗi file một task tạo overhead mà Spark đã xử lý song song được |
 | Deferrable sensor | Chưa dùng | Chọn FileSensor `reschedule`, `deferrable=False`; không cần thêm triggerer |
 | Email/Slack | Summary log là mặc định | Đề cho phép log hoặc gửi thông báo; chưa có cấu hình/ủy quyền gửi tới người nhận |
@@ -190,10 +197,13 @@ Giai đoạn mở rộng: ETL chỉ xử lý partition mới hoặc bị sửa; 
 flowchart TD
     S["start_pipeline<br/>EmptyOperator"] --> V["validate_raw_data<br/>FileSensor mở rộng + kiểm tra nhẹ"]
     V --> E["submit_pyspark_etl<br/>SparkSubmitOperator"]
-    E --> R["compute_rfm_metrics<br/>SparkSubmitOperator"]
-    E --> A["detect_anomalies<br/>SparkSubmitOperator"]
+    E --> R["compute_rfm_metrics<br/>RfmSparkSubmitOperator + publication gate"]
+    E --> A["detect_anomalies<br/>AuditSparkSubmitOperator + publication gate"]
     R --> N["notify_completion<br/>PythonOperator — all_success"]
     A --> N
+    R -. RFM Asset .-> M[Marketing Consumer DAG]
+    A -. Anomaly Asset .-> AU[(Audit sẵn sàng)]
+    N -. Snapshot Asset .-> X[Executive Consumer DAG]
 ```
 
 `compute_rfm_metrics` tính RFM tích lũy rồi **load + transform**, không fit scaler/KMeans. Mỗi daily run pin một model version; training không phải upstream task của daily.
@@ -299,11 +309,21 @@ CLI đã triển khai dùng `--pipeline-context <context.json>` thay cho nhiều
 
 ### 7.4 compute_rfm_metrics
 
+Operator kế thừa SparkSubmitOperator kiểm tra ETL/RFM `context_hash`,
+`etl_hash`, model và `_SUCCESS` sau Spark, ghi `rfm_publication.json` rồi
+gắn metadata cho RFM outlet trước khi task success. Marketing có thể chạy
+khi Audit chưa xong hoặc thất bại. Đây là gate trong `execute`, không phải
+callback best effort. Marker đã công bố được giữ nguyên và tái sử dụng khi retry.
+
 Gọi `pyspark_rfm.py`, đọc RFM-ready snapshot được ETL manifest trỏ đến. Tính RFM, điểm số, nhãn business, inactivity flag; kiểm tra artifact hash, nạp PipelineModel đã pin và gọi `transform` để gán Cluster. Ghi dữ liệu cùng cluster profile của ngày và summary. Cutoff, model version và churn_days lấy từ `--pipeline-context`; k lấy từ model manifest, từng nhánh không tự suy ra ngày hoặc fit lại model.
 
 Daily có ít khách hơn k hoặc không có khách ở một số cụm vẫn scoring hợp lệ. Điều kiện đủ khách/vector và đủ k cụm thuộc training; daily chỉ cần lịch sử hợp lệ, mỗi khách có Cluster trong `[0,k)`. Demo 07–09/12/2011 phải dùng model đã huấn luyện từ cutoff trước đó; không dùng kết quả chọn k ngày 10/12 để tuyên bố đánh giá past-only.
 
 ### 7.5 detect_anomalies
+
+AuditSparkSubmitOperator dùng chung gate điều phối với RFM: kiểm tra
+context/ETL hash và ba output audit sau Spark, ghi audit_publication.json
+rồi phát FLAGGED_ANOMALIES_ASSET. Không đọc hoặc chờ manifest RFM.
 
 Gọi `pyspark_anomalies.py`, đọc audit-ready snapshot cùng run. Hai sản phẩm trong **một job đánh giá audit**:
 
@@ -313,6 +333,11 @@ Gọi `pyspark_anomalies.py`, đọc audit-ready snapshot cùng run. Hai sản p
 Cả hai phải ghi và validate trước khi publish chung audit manifest. Một output ghi xong mà output kia lỗi vẫn là task failed; output dở chưa được consumer sử dụng. Chi tiết nghiệp vụ ở mục 10.
 
 ### 7.6 notify_completion
+
+Chỉ phát `CURATED_TRANSACTIONS_ASSET` và `RETAIL_SNAPSHOT_ASSET`.
+Hai Asset nhánh đã được phát độc lập tại RFM/Audit. Task kiểm tra snapshot
+hiện tại khớp cả hai publication marker trước khi công bố completion.
+Một nhánh lỗi không thu hồi Asset nhánh kia, nhưng chặn event tổng hợp.
 
 Chọn PythonOperator ghi summary vì đáp ứng đúng lựa chọn “logs workflow summary metrics” trong đề, không cần SMTP.
 
@@ -508,7 +533,11 @@ Atomic file replace trên Docker bind mount Windows **phải được kiểm th�
 
 Retry có thể để lại generation dư nhưng published dataset không có dòng trùng: cùng source/C/rules có cùng nội dung business. Không yêu cầu tên file part hoặc byte nén Parquet giống nhau. Không append output snapshot.
 
-Khi clear ETL để đổi dữ liệu/code, **clear luôn hai nhánh và notify**. Nếu chỉ clear RFM, nó đọc ETL manifest cũ cùng run đã xác nhận; trước publish phải kiểm tra audit cũng dùng đúng hash đó. Khác source/rule giữa hai nhánh thì notify fail, không ghép kết quả cũ/mới.
+Trước khi công bố bất kỳ nhánh nào, rerun ETL cần chạy lại cả hai nhánh và notify để cùng
+generation. **Sau khi một nhánh có publication marker, nếu cần đổi generation đó phải tạo
+DagRun mới**, vì Marketing có thể đã tiêu thụ snapshot cũ. Clear RFM cùng run
+chỉ dùng lại snapshot đã công bố nếu các gate vẫn đạt; Audit áp dụng cùng
+quy tắc. notify có thể retry độc lập. Source/params/code thay đổi luôn cần run mới.
 
 Pool và max_active_runs bảo vệ các task do DAG chạy, không khóa các lệnh spark-submit chạy tay. Writer của published pointer cần lock theo cutoff hoặc compare-and-swap; chỉ DAG này được publish chính thức trong V1. Lệnh thử nghiệm viết namespace riêng. Lock stale phải được xác minh job đã dừng trước khi gỡ; không xóa lock chỉ vì retry bắt đầu.
 

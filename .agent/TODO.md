@@ -2,12 +2,20 @@
 
 | Status | Task | Owner | Branch | Dependency |
 |---|---|---|---|---|
-| IN PROGRESS | Integrate origin/main 709eb68 with local training DAG; preserve upstream incremental CLI and local asset work | Codex | main (rebase) | User pull/conflict-resolution request 2026-10-11; Docker verification running |
+| DONE | Independent RFM/audit publications and aggregate-only Dashboard Asset | Codex | main | 54 focused tests; four DAGs import/serialize; Ruff passed; docs/Word updated; no production run |
+| DONE | Publish validated RFM Asset from compute task; decouple Marketing and retain matched Executive snapshots | Codex | main | 42 focused tests passed; four DAGs import/serialize; Ruff passed; docs and Word updated; no full-data rerun |
+| DONE | Create concise Vietnamese Word summary of current DAG system | Codex | main | docs/TOM_TAT_HE_THONG_DAG_VI.docx; 4 designed pages; ZIP/XML/content checks passed; no runtime changes |
+| DONE | Add optional local Marquez backend/UI and verify lightweight Airflow HTTP delivery | Codex | main | Smoke success; API run/facet/3-node graph verified; UI/API HTTP 200; no Spark rerun |
+| DONE | Add Airflow OpenLineage collection from manifests, local file transport and focused fixture checks | Codex | main | 21 tests passed; real provider fixture START/COMPLETE verified; no Spark/full-data rerun; docs/OPENLINEAGE_VI.md |
+| DEFERRED | Document data lineage and observability, then consider OpenLineage | Codex | main | User requested full current DAG execution first on 2026-10-11 |
+| DONE | Run full-data bootstrap, training DAG, daily DAG and both asset consumers | Codex | main | 4 DAGs / 11 tasks success first try; Parquet/hash/event verification passed; docs/RUN_EVIDENCE_20261011.md |
+| DONE | Integrate origin/main 709eb68 with local training DAG; preserve upstream incremental CLI and local asset work | Codex | main | 133 regression tests + 14 Asset DAG tests passed; four DAGs parsed; no unresolved conflicts |
 | DONE | Final-review fix pass for anomaly rule base | Claude | `feature/anomaly-rule-base` | 98 Docker tests passed; full-data re-run exit 0 |
-| TODO | Run DAG `detect_anomalies` end-to-end through Airflow after merge | Unassigned | - | Airflow stack initialized |
+| DONE | Run DAG `detect_anomalies` end-to-end through Airflow after merge | Codex | main | daily_full_stack_20261011 success; 536641 rows, 54 flagged orders; 14-rule audit |
 | DONE | Two-tier anomaly rule base by record type, channel and per-customer baseline; move assess_orders into pyspark_anomalies.py; document in docs/ANOMALY_DETECTION_VI.md | Claude | `feature/anomaly-rule-base` | 94 Docker tests passed; full-data run exit 0; `.agent/plans/archive/2026-10-08-anomaly-rule-base.md` |
 | TODO | Recalibrate contextual anomaly rules (quantity-tier pricing, MAD floor, minimum value_at_risk) per docs/ANOMALY_DETECTION_VI.md section 9.3 | Unassigned | - | User approval of new constants |
 | TODO | Update handbook and DAG design docs to the two-tier anomaly rule base | Unassigned | - | Merge of `feature/anomaly-rule-base` |
+| DONE | Add publication assets and two event-driven demo consumers | Codex | main | Docker: 14 DAG/event tests passed and all four DAGs parse; scheduler-trigger demo remains unrun |
 | DONE | Resolve rebase conflicts preserving upstream notes and local training/scoring | Codex | `main` (rebase) | 59 focused Docker tests passed; AST and note preservation checks passed; ready to continue rebase |
 | DONE | Implement two-DAG training/scoring, model contracts, bootstrap and focused regression | Codex | `main` | 94 tests passed; lint/import checks passed; real-data bootstrap and scheduler demo documented in SETUP |
 | DONE | Revise DAG design for daily scoring and separate versioned model training; minimal runtime migration | Codex | `main` | User request 2026-10-06; implementation tracked in the row above |

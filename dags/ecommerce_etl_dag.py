@@ -17,8 +17,15 @@ from airflow.sdk import (
     SyncCallback,
 )
 
+from retail_support.assets import (
+    COMPLETION_ASSETS,
+    RFM_CUSTOMERS_ASSET,
+    FLAGGED_ANOMALIES_ASSET,
+)
 from retail_support.tasks import (
     LandingValidationSensor,
+    RfmSparkSubmitOperator,
+    AuditSparkSubmitOperator,
     log_deadline_miss,
     log_failure,
     log_retry,
@@ -30,9 +37,11 @@ CONTEXT_PATH = (
 )
 
 
-def spark_job(task_id, script, minutes):
+def spark_job(
+    task_id, script, minutes, *, operator=SparkSubmitOperator, outlets=()
+):
     """The pool bounds concurrent JVMs; the Connection sets local[2]."""
-    return SparkSubmitOperator(
+    return operator(
         task_id=task_id,
         application=f"/opt/airflow/scripts/{script}",
         application_args=["--pipeline-context", CONTEXT_PATH],
@@ -45,6 +54,7 @@ def spark_job(task_id, script, minutes):
         durable=False,
         do_xcom_push=False,
         execution_timeout=timedelta(minutes=minutes),
+        outlets=list(outlets),
     )
 
 
@@ -110,6 +120,8 @@ Daily only applies the frozen scaler/KMeans; training runs separately.
 The exclusive analysis cutoff is 2011-12-10. The daily timetable is bounded
 to historical data: use explicit manual runs/backfills, not today's date.
 Success requires both analytics branches and the publication summary.
+Each analytics branch publishes its own readiness independently.
+Final publication emits curated transactions and the validated snapshot.
 Outputs are versioned; original CSV and legacy Parquet are preserved.
 """,
 ) as dag:
@@ -135,10 +147,18 @@ Outputs are versioned; original CSV and legacy Parquet are preserved.
         "submit_pyspark_etl", "pyspark_clean.py", 20
     )
     compute_rfm_metrics = spark_job(
-        "compute_rfm_metrics", "pyspark_rfm.py", 20
+        "compute_rfm_metrics",
+        "pyspark_rfm.py",
+        20,
+        operator=RfmSparkSubmitOperator,
+        outlets=[RFM_CUSTOMERS_ASSET],
     )
     detect_anomalies = spark_job(
-        "detect_anomalies", "pyspark_anomalies.py", 30
+        "detect_anomalies",
+        "pyspark_anomalies.py",
+        30,
+        operator=AuditSparkSubmitOperator,
+        outlets=[FLAGGED_ANOMALIES_ASSET],
     )
     completion = PythonOperator(
         task_id="notify_completion",
@@ -146,6 +166,7 @@ Outputs are versioned; original CSV and legacy Parquet are preserved.
         trigger_rule="all_success",
         execution_timeout=timedelta(minutes=2),
         do_xcom_push=False,
+        outlets=list(COMPLETION_ASSETS),
     )
 
     start_pipeline >> validate_raw_data >> submit_pyspark_etl

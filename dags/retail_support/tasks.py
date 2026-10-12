@@ -4,17 +4,34 @@ import json
 import logging
 from datetime import timedelta
 
+from airflow.providers.apache.spark.operators.spark_submit import (
+    SparkSubmitOperator,
+)
 from airflow.providers.standard.sensors.filesystem import FileSensor
 from airflow.sdk import get_current_context
 from airflow.sdk.exceptions import AirflowFailException
 
 from retail_contracts import (
     build_context,
+    context_file,
     data_root,
     iso_date,
+    json_hash,
     load_context,
     publish_completion,
     token,
+)
+from retail_support.assets import (
+    COMPLETION_ASSETS,
+    RFM_CUSTOMERS_ASSET,
+    FLAGGED_ANOMALIES_ASSET,
+)
+from retail_support.publication import (
+    rfm_event_metadata,
+    rfm_publication,
+    branch_publication,
+    branch_publication_path,
+    branch_event_metadata,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -67,12 +84,84 @@ class LandingValidationSensor(FileSensor):
             raise AirflowFailException(str(error)) from error
 
 
+class BranchSparkSubmitOperator(SparkSubmitOperator):
+    """Validate Spark output before task success emits a branch Asset.
+
+    This gate is inside execute, not a best-effort success callback. A failed
+    gate fails the task and cannot emit a ready Asset. Retry after publication
+    reuses the frozen snapshot without starting another Spark generation.
+    """
+
+    stage = None
+    asset = None
+
+    def execute(self, context):
+        metadata = context["ti"].xcom_pull(task_ids="validate_raw_data")
+        root = data_root()
+        inputs = load_context(metadata["context_path"])
+        if (inputs["dag_id"], inputs["run_id"]) != (
+            self.dag_id,
+            context["run_id"],
+        ):
+            raise ValueError("Branch context does not match task run")
+        if not branch_publication_path(root, inputs, self.stage).exists():
+            super().execute(context)
+        summary = branch_publication(root, inputs, self.stage, publish=True)
+        extra = branch_event_metadata(root, summary, self.stage)
+        context["outlet_events"][self.asset].extra = extra
+        LOGGER.info(
+            "BRANCH_PUBLISHED %s %s",
+            self.stage,
+            json.dumps(extra, sort_keys=True),
+        )
+
+
+class RfmSparkSubmitOperator(BranchSparkSubmitOperator):
+    stage = "rfm"
+    asset = RFM_CUSTOMERS_ASSET
+
+
+class AuditSparkSubmitOperator(BranchSparkSubmitOperator):
+    stage = "audit"
+    asset = FLAGGED_ANOMALIES_ASSET
+
+
 def notify_completion():
     """Publish only after both branches produced consistent stage manifests."""
     context = get_current_context()
     metadata = context["ti"].xcom_pull(task_ids="validate_raw_data")
     inputs = load_context(metadata["context_path"])
+    # Aggregate publication must match both advertised branch snapshots.
+    rfm = rfm_publication(data_root(), inputs)
+    audit = branch_publication(data_root(), inputs, "audit")
     summary = publish_completion(data_root(), inputs)
+    # PythonOperator uses outlet_events, not a generator yielding Metadata.
+    # Populate only after validation and atomic publication both succeed.
+    extra = {
+        **rfm_event_metadata(data_root(), rfm),
+        "publication_version": 3,
+        "publication_kind": "snapshot",
+        "audit_hash": json_hash(audit["stages"]["audit"]),
+        "audit_manifest": str(
+            branch_publication_path(data_root(), inputs, "audit")
+        ),
+        "completion_hash": json_hash(summary),
+        "published_pointer": str(
+            data_root()
+            / "manifests"
+            / "published"
+            / f"{inputs['run_date']}.json"
+        ),
+        # A later publication can replace the date pointer. Consumers must
+        # resolve this run-specific summary to retain the event's identity.
+        "completion_manifest": str(
+            context_file(data_root(), inputs["run_key"]).with_name(
+                "completion.json"
+            )
+        ),
+    }
+    for asset in COMPLETION_ASSETS:
+        context["outlet_events"][asset].extra = dict(extra)
     LOGGER.info("PIPELINE_COMPLETE %s", json.dumps(summary, sort_keys=True))
 
 

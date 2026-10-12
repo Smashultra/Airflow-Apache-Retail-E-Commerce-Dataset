@@ -16,6 +16,14 @@ from ecommerce_etl_dag import dag
 from retail_support.tasks import LandingValidationSensor, business_date
 from retail_support.tasks import training_dates
 from retail_rfm_training_dag import dag as training_dag
+from retail_marketing_consumer_dag import dag as marketing_dag
+from retail_executive_dashboard_dag import dag as executive_dag
+from retail_support.assets import (
+    COMPLETION_ASSETS,
+    FLAGGED_ANOMALIES_ASSET,
+    RETAIL_SNAPSHOT_ASSET,
+    RFM_CUSTOMERS_ASSET,
+)
 
 
 def context(run_type="manual", day="2011-12-09"):
@@ -50,6 +58,75 @@ def test_topology_real_operators_and_success_only_leaf():
     }
     assert dag.get_task("notify_completion").trigger_rule == "all_success"
     assert dag.deadline is not None
+
+
+def test_rfm_emits_early_and_consumers_keep_asset_schedules():
+    assert dag.get_task("notify_completion").outlets == list(COMPLETION_ASSETS)
+    assert dag.get_task("compute_rfm_metrics").outlets == [RFM_CUSTOMERS_ASSET]
+    assert all(
+        not task.outlets
+        for task in dag.tasks
+        if task.task_id
+        not in {"notify_completion", "compute_rfm_metrics", "detect_anomalies"}
+    )
+    assert marketing_dag.schedule == [RFM_CUSTOMERS_ASSET]
+    assert dag.get_task("detect_anomalies").outlets == [
+        FLAGGED_ANOMALIES_ASSET
+    ]
+    assert executive_dag.schedule == [RETAIL_SNAPSHOT_ASSET]
+
+
+@pytest.mark.parametrize("failure", [None, "spark", "manifest", "disk"])
+def test_rfm_execute_gates_asset_before_task_success(rfm_ready, failure):
+    from unittest.mock import Mock
+    from retail_contracts import atomic_json, context_file, stage_file
+    from retail_support.publication import rfm_publication_path
+
+    root, inputs, stages = rfm_ready
+    outlets = {RFM_CUSTOMERS_ASSET: SimpleNamespace(extra={})}
+    ctx = {"ti": Mock(), "outlet_events": outlets, "run_id": inputs["run_id"]}
+    ctx["ti"].xcom_pull.return_value = {
+        "context_path": str(context_file(root, inputs["run_key"]))
+    }
+    if failure == "manifest":
+        stages["rfm"]["etl_hash"] = "wrong"
+        atomic_json(stage_file(root, inputs, "rfm"), stages["rfm"])
+
+    def spark(*args):
+        assert not outlets[RFM_CUSTOMERS_ASSET].extra
+        if failure == "spark":
+            raise RuntimeError("spark failed")
+
+    def disk(*args):
+        raise OSError("disk failed")
+
+    with patch.object(
+        SparkSubmitOperator, "execute", side_effect=spark
+    ) as submit:
+        task = dag.get_task("compute_rfm_metrics")
+        if failure == "disk":
+            with patch(
+                "retail_support.publication.atomic_json", side_effect=disk
+            ):
+                with pytest.raises(OSError, match="disk failed"):
+                    task.execute(ctx)
+        elif failure:
+            with pytest.raises((RuntimeError, ValueError)):
+                task.execute(ctx)
+        else:
+            task.execute(ctx)
+            extra = dict(outlets[RFM_CUSTOMERS_ASSET].extra)
+            assert extra["rfm_manifest"] == str(
+                rfm_publication_path(root, inputs)
+            )
+            assert "completion_manifest" not in extra
+            # Retry reuses the committed generation and event identity.
+            task.execute(ctx)
+            assert outlets[RFM_CUSTOMERS_ASSET].extra == extra
+        submit.assert_called_once()
+    if failure:
+        assert not outlets[RFM_CUSTOMERS_ASSET].extra
+        assert not rfm_publication_path(root, inputs).exists()
 
 
 def test_manual_requires_date_and_scheduled_forbids_wrong_override():

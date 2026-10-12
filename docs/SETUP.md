@@ -174,6 +174,13 @@ failed task and its downstream tasks after fixing a transient issue. If source,
 business parameters or business code changed, create a new DagRun instead:
 the saved run context freezes these inputs. Re-running ETL requires re-running
 both branches so the completion step sees one consistent ETL generation.
+After either branch publication marker exists, do not replace that branch's
+ETL/output generation in the same run. Both RFM and Audit tasks reuse their
+checked snapshots on retry; changed generations require a new DagRun.
+Each branch emits only its own Asset. Notify validates both markers and emits
+RETAIL_SNAPSHOT_ASSET plus curated transactions; Dashboard listens only to the
+aggregate Asset. Use a new daily run after upgrading; old branch events cannot
+trigger the new aggregate schedule. See [Asset scheduling](ASSET_SCHEDULING_VI.md).
 
 Incomplete attempts remain unpublished and may be inspected. Do not manually
 point consumers at them. Publication replaces one small JSON pointer only after

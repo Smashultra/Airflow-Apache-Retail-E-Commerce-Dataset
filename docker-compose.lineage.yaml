@@ -1,0 +1,65 @@
+# Opt-in override: use together with docker-compose.yaml.
+x-lineage-env: &lineage-env
+  AIRFLOW__OPENLINEAGE__TRANSPORT: >-
+    {"type":"composite","continue_on_failure":true,"continue_on_success":true,"transports":{"local":{"type":"file","log_file_path":"/opt/airflow/logs/openlineage","append":false},"marquez":{"type":"http","url":"http://marquez:5000","endpoint":"api/v1/lineage","timeout":3,"retry":{"total":0}}}}
+
+services:
+  airflow-scheduler:
+    environment: *lineage-env
+  airflow-dag-processor:
+    environment: *lineage-env
+  airflow-apiserver:
+    environment: *lineage-env
+
+  marquez-db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: marquez
+      POSTGRES_PASSWORD: marquez
+      POSTGRES_DB: marquez
+    volumes:
+      - marquez-db-volume:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "marquez"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    mem_limit: 256m
+    cpus: 0.5
+    restart: "no"
+
+  marquez:
+    image: marquezproject/marquez:0.51.1
+    environment:
+      POSTGRES_HOST: marquez-db
+      MARQUEZ_PORT: 5000
+      MARQUEZ_ADMIN_PORT: 5001
+      SEARCH_ENABLED: "false"
+      JAVA_OPTS: "-Xms128m -Xmx512m"
+    ports:
+      - "127.0.0.1:5000:5000"
+    depends_on:
+      marquez-db:
+        condition: service_healthy
+    mem_limit: 768m
+    cpus: 1.0
+    restart: "no"
+
+  marquez-web:
+    image: marquezproject/marquez-web:0.51.1
+    environment:
+      MARQUEZ_HOST: marquez
+      MARQUEZ_PORT: 5000
+      WEB_PORT: 3000
+      REACT_APP_ADVANCED_SEARCH: "false"
+      NODE_OPTIONS: "--max-old-space-size=192"
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - marquez
+    mem_limit: 256m
+    cpus: 0.5
+    restart: "no"
+
+volumes:
+  marquez-db-volume:
