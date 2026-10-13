@@ -3,11 +3,9 @@
 from datetime import timedelta
 
 import pendulum
-from airflow.providers.apache.spark.operators.spark_submit import (
-    SparkSubmitOperator,
-)
 from airflow.providers.standard.operators.python import PythonOperator
 from airflow.sdk import DAG, CronDataIntervalTimetable, Param
+from retail_support.spark_lineage import LineageSparkSubmitOperator
 
 from retail_support.tasks import (
     log_failure,
@@ -74,7 +72,7 @@ are simulated. Failed training leaves the serving model unchanged.
         retries=0,
         execution_timeout=timedelta(minutes=2),
     )
-    train = SparkSubmitOperator(
+    train = LineageSparkSubmitOperator(
         task_id="train_rfm_model",
         application="/opt/airflow/scripts/retail_training.py",
         application_args=[

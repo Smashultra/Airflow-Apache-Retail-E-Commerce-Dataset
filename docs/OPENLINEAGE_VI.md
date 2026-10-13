@@ -3,7 +3,10 @@
 Đã bật thu thập ở Airflow, ghi từng event vào
 `logs/openlineage-<timestamp>.json`. Cấu hình mặc định chỉ ghi file; override
 `docker-compose.lineage.yaml` bổ sung Marquez API/UI và gửi HTTP song song.
-Chưa dùng Spark listener. Không quét Parquet hay chạy Spark để tạo lineage.
+Collector Airflow không quét Parquet hay chạy Spark để tạo lineage.
+Đã bổ sung Spark listener tùy chọn (mặc định tắt): thu metadata ngay trong
+JVM khi job chạy, có parent run nối về task Airflow. Xem cấu hình, fixture và
+giới hạn tại [Spark OpenLineage listener](SPARK_OPENLINEAGE_VI.md).
 
 ## Bước 2: bật giao diện Marquez khi cần
 
@@ -72,7 +75,8 @@ Khi build image mới, `requirements.txt` giữ các phiên bản đó.
 ## Dữ liệu thu thập
 
 `dags/retail_support/lineage.py` cung cấp extractor cho PythonOperator,
-SparkSubmitOperator, RfmSparkSubmitOperator, AuditSparkSubmitOperator và LandingValidationSensor. Provider quản lý event
+SparkSubmitOperator, LineageSparkSubmitOperator, RfmSparkSubmitOperator,
+AuditSparkSubmitOperator và LandingValidationSensor. Provider quản lý event
 lifecycle, timestamp, run ID và quan hệ DAG/task; extractor đọc JSON manifest
 của đúng `dag_id`/`run_id` để bổ sung input/output và metadata.
 
@@ -113,15 +117,17 @@ bị mất: bước này chưa có outbox/replay đảm bảo giao nhận.
 Consumer được nối qua cùng định danh dataset published. Chưa bổ sung custom
 parent-run facet nối consumer với chính xác producer run; metadata nguồn vẫn
 có trong Airflow Asset events và bằng chứng chạy trước. Đây là lineage dataset
-do ứng dụng khai báo, chưa phải lineage tự động từ Spark query plan/từng cột.
+do ứng dụng khai báo. Listener tùy chọn bổ sung lineage từ Spark query plan
+và từng cột cho các phép toán được hỗ trợ; chưa chạy lại retail đầy đủ.
 
 ## Vận hành nhẹ
 
 - Bốn DAG dữ liệu vẫn paused. Không cần unpause để đọc JSON events đã ghi.
 - `OPENLINEAGE_DISABLED=false` bật collector; đặt `true` trong `.env` rồi
   recreate service để tắt. Không sửa `.env` trong lần triển khai này.
-- Cấu hình tắt thu thập source code/full task info, chưa inject cấu hình vào
-  Spark. Mặc định chỉ ghi file; override gửi thêm đến Marquez local.
+- Cấu hình tắt thu thập source code/full task info. Parent injection vào Spark
+  chỉ bật trong operator khi listener được bật; Java transport cấu hình riêng.
+  Collector Airflow mặc định chỉ ghi file; override gửi thêm đến Marquez local.
 - `append=false` tạo file event riêng theo timestamp. Thư mục logs đã bị
   Git ignore; bước này chưa cấu hình retention tự động.
 

@@ -264,6 +264,7 @@ class RetailExtractor(BaseExtractor):
     def get_operator_classnames(cls):
         return [
             "SparkSubmitOperator",
+            "LineageSparkSubmitOperator",
             "RfmSparkSubmitOperator",
             "AuditSparkSubmitOperator",
             "PythonOperator",

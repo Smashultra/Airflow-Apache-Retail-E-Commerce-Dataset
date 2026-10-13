@@ -3,9 +3,6 @@
 from datetime import timedelta
 
 import pendulum
-from airflow.providers.apache.spark.operators.spark_submit import (
-    SparkSubmitOperator,
-)
 from airflow.providers.standard.operators.empty import EmptyOperator
 from airflow.providers.standard.operators.python import PythonOperator
 from airflow.sdk import (
@@ -22,6 +19,7 @@ from retail_support.assets import (
     RFM_CUSTOMERS_ASSET,
     FLAGGED_ANOMALIES_ASSET,
 )
+from retail_support.spark_lineage import LineageSparkSubmitOperator
 from retail_support.tasks import (
     LandingValidationSensor,
     RfmSparkSubmitOperator,
@@ -38,13 +36,20 @@ CONTEXT_PATH = (
 
 
 def spark_job(
-    task_id, script, minutes, *, operator=SparkSubmitOperator, outlets=()
+    task_id,
+    script,
+    minutes,
+    *,
+    operator=LineageSparkSubmitOperator,
+    outlets=(),
 ):
     """The pool bounds concurrent JVMs; the Connection sets local[2]."""
     return operator(
         task_id=task_id,
         application=f"/opt/airflow/scripts/{script}",
         application_args=["--pipeline-context", CONTEXT_PATH],
+        # Jinja templating 1 cấu trúc cho phép là khi chạy DAG
+        # thì mới có giá trị
         conn_id="spark_default",
         deploy_mode="client",
         driver_memory="3g",

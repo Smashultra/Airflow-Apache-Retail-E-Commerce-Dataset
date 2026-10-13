@@ -4,9 +4,6 @@ import json
 import logging
 from datetime import timedelta
 
-from airflow.providers.apache.spark.operators.spark_submit import (
-    SparkSubmitOperator,
-)
 from airflow.providers.standard.sensors.filesystem import FileSensor
 from airflow.sdk import get_current_context
 from airflow.sdk.exceptions import AirflowFailException
@@ -33,6 +30,7 @@ from retail_support.publication import (
     branch_publication_path,
     branch_event_metadata,
 )
+from retail_support.spark_lineage import LineageSparkSubmitOperator
 
 LOGGER = logging.getLogger(__name__)
 
@@ -84,7 +82,7 @@ class LandingValidationSensor(FileSensor):
             raise AirflowFailException(str(error)) from error
 
 
-class BranchSparkSubmitOperator(SparkSubmitOperator):
+class BranchSparkSubmitOperator(LineageSparkSubmitOperator):
     """Validate Spark output before task success emits a branch Asset.
 
     This gate is inside execute, not a best-effort success callback. A failed

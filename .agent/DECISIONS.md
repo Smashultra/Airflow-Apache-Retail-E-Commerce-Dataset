@@ -2,6 +2,13 @@
 
 Use `YYYY-MM-DD HH:mm UTC+07:00` in every decision heading.
 
+## 2026-10-13 21:51 UTC+07:00 - Optional Spark listener alongside publication lineage
+
+- Decision: Keep Airflow manifest/publication lineage authoritative for business readiness. Add opt-in JVM query lineage to the four Spark submissions through a shared operator; do not replace branch gates or Asset schedules.
+- Decision: Pin the Scala 2.13 listener JAR 1.52.0 and SHA-512, install once outside task execution, verify offline at submission, and revalidate before changing PySpark 4.2.0. Driver classpath plus --jars avoids Spark 4 extension classloader warnings.
+- Decision: Use provider-generated Airflow parent/root identities and a separate Java file/composite transport. Default off, optional HTTP only to existing local Marquez; no new service or resource-pool change.
+- Consequences: Spark physical datasets and Airflow logical publication datasets remain distinct; parent linkage connects jobs, not automatic dataset aliases. Delivery is best effort. Fixtures verify basic column lineage/HTTP failure isolation/actual parent identity; full retail overhead and ML coverage remain unverified.
+
 ## 2026-10-12 12:51 UTC+07:00 - Independent branch publications and aggregate readiness
 
 - Status: Implemented per revised user architecture; supersedes the RFM-only split below. 54 focused tests and all four DAG imports/serialization passed.

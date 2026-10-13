@@ -24,6 +24,7 @@ data/audit/anomaly_results*/
 data/manifests/
 data/models/
 data/verification/
+data/lineage/
 .ruff_cache/
 
 .idea/

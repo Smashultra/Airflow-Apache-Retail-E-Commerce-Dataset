@@ -23,6 +23,8 @@ x-airflow-common: &airflow-common
     AIRFLOW__OPENLINEAGE__INCLUDE_FULL_TASK_INFO: "false"
     AIRFLOW__OPENLINEAGE__SPARK_INJECT_PARENT_JOB_INFO: "false"
     AIRFLOW__OPENLINEAGE__SPARK_INJECT_TRANSPORT_INFO: "false"
+    RETAIL_SPARK_LINEAGE_ENABLED: ${RETAIL_SPARK_LINEAGE_ENABLED:-false}
+    RETAIL_SPARK_LINEAGE_MARQUEZ: ${RETAIL_SPARK_LINEAGE_MARQUEZ:-false}
   volumes:
     - ./dags:/opt/airflow/dags
     - ./scripts:/opt/airflow/scripts

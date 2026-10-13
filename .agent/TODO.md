@@ -2,6 +2,7 @@
 
 | Status | Task | Owner | Branch | Dependency |
 |---|---|---|---|---|
+| DONE | Add opt-in Spark OpenLineage listener with pinned JAR, Airflow parent and isolated Spark verification | Codex | main | 61 tests passed; real Spark schema/column/Marquez, broken HTTP and Airflow parent verified; default off; no full retail run |
 | DONE | Independent RFM/audit publications and aggregate-only Dashboard Asset | Codex | main | 54 focused tests; four DAGs import/serialize; Ruff passed; docs/Word updated; no production run |
 | DONE | Publish validated RFM Asset from compute task; decouple Marketing and retain matched Executive snapshots | Codex | main | 42 focused tests passed; four DAGs import/serialize; Ruff passed; docs and Word updated; no full-data rerun |
 | DONE | Create concise Vietnamese Word summary of current DAG system | Codex | main | docs/TOM_TAT_HE_THONG_DAG_VI.docx; 4 designed pages; ZIP/XML/content checks passed; no runtime changes |
