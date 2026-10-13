@@ -812,10 +812,10 @@ def test_merge_schema_drift_and_reserved_column_rejected(spark):
 
 
 
-# Incremental: trạng thái, retry, khách hoạt động và lưu trữ.
+# Incremental: trạng thái, retry và lưu trữ.
 from scripts.pyspark_rfm import (
     canonical_transactions, customer_state, state_to_rfm, advance_state,
-    active_customers, ingest_store, read_store_rfm, read_store_active,
+    ingest_store, read_store_rfm,
     load_manifest, _fingerprint, read_store_table,
 )
 from scripts.pyspark_rfm import compute_rfm, parse_args
@@ -852,14 +852,6 @@ def test_incremental_matches_full_recompute_split_invoice_and_rounding(spark):
     assert same.exceptAll(state).isEmpty() and state.exceptAll(same).isEmpty()
 
 
-def test_active_period_excludes_inactive_and_boundaries(spark):
-    tx = frame(spark, [('A','1',datetime(2011,12,10,23,59),1,1.0,'P'),
-                      ('B','2',datetime(2011,12,11),1,1.0,'P'),
-                      ('C','3',datetime(2011,12,12),1,1.0,'P')])
-    assert [r.CustomerID for r in active_customers(tx,'2011-12-11','2011-12-12').collect()] == ['B']
-    assert active_customers(tx,'2011-12-13','2011-12-14').isEmpty()
-
-
 def test_fingerprint_order_duplicate_and_schema(spark):
     tx = canonical_transactions(seed(spark))
     assert _fingerprint(tx) == _fingerprint(tx.unionByName(tx).dropDuplicates().repartition(2).select(*reversed(tx.columns)))
@@ -870,45 +862,75 @@ def test_fingerprint_order_duplicate_and_schema(spark):
 def test_incremental_cli():
     base = ['--output','out','--model-path','model','--model-version','v1','--run-date','2011-12-12']
     args = parse_args(["--input", "new", "--batch-id", "b1"] + base + ['--store-path','store'])
-    assert args.period_start == '2011-12-11' and not args.all_customers
-    args = parse_args(["--input", "new", "--batch-id", "b1"] + base + ['--store-path','store','--input','new','--batch-id','b1','--period-start','2011-12-01'])
-    assert args.period_start == '2011-12-01'
+    assert args.store_path == 'store' and args.batch_id == 'b1'
     for extra in [['--store-path','store','--batch-id',''],
                   ['--store-path','store','--initialize-store','--input',''],
                   ['--store-path','store','--history-path','old'],
-                  ['--store-path','store','--period-start','2011-12-12'],
                   ['--store-path','store','--num-buckets','0']]:
         with pytest.raises(SystemExit):
             parse_args(["--input", "new", "--batch-id", "b1"] + base+extra)
     assert train_args(['--store-path','store','--run-date','2012-01-01','--k','2','--model-output','m']).input is None
 
 
-def test_daily_empty_period_writes_schema_without_loading_model(spark,monkeypatch):
+@pytest.mark.parametrize("has_new_customer", [False, True])
+def test_daily_main_scores_all_customers(
+    spark, monkeypatch, fitted_model, has_new_customer
+):
     from types import SimpleNamespace
-    from pyspark.sql.readwriter import DataFrameWriter
+    from unittest.mock import Mock
+    from pyspark.ml import Pipeline
+    from pyspark.ml.clustering import KMeans
+    from pyspark.ml.feature import StandardScaler
     import scripts.pyspark_rfm as job
-    population = compute_rfm(seed(spark),'2011-12-12')
-    args = parse_args(["--input", "new", "--batch-id", "b1"] + ['--store-path','store','--output','out','--model-path','model',
-                       '--model-version','v1','--run-date','2011-12-12'])
+
+    transactions = seed(spark)
+    if has_new_customer:
+        transactions = transactions.unionByName(frame(spark, [
+            ('C', 'I3', datetime(2011, 12, 11, 9), 1, 20., 'P3')]))
+    state = customer_state(transactions)
+    args = parse_args([
+        '--input', 'new', '--batch-id', 'b1', '--store-path', 'store',
+        '--output', 'out', '--model-path', 'model', '--model-version', 'v1',
+        '--run-date', '2011-12-12',
+    ])
     class Builder:
-        def appName(self,*args): return self
-        def config(self,*args): return self
+        def appName(self, *args): return self
+        def config(self, *args): return self
         def getOrCreate(self): return spark
+
+    before = {r.CustomerID: r for r in state_to_rfm(state, '2011-12-11').collect()}
+    manifest = {'version': '7'}
+    ingest = Mock(return_value=manifest)
+    read = Mock(return_value=state)
+    load = Mock(return_value=fitted_model)
     writes = []
-    monkeypatch.setattr(job,'parse_args',lambda:args)
-    monkeypatch.setattr(job,'SparkSession',SimpleNamespace(builder=Builder()))
-    monkeypatch.setattr(spark,'stop',lambda:None)
-    monkeypatch.setattr(job,'ingest_store',lambda *args:{'version':'1'})
-    monkeypatch.setattr(job,'read_store_table',lambda *args:population)
-    monkeypatch.setattr(job,'state_to_rfm',lambda *args:population)
-    monkeypatch.setattr(job,'read_store_active',lambda *args:population.select('CustomerID').limit(0))
-    monkeypatch.setattr(job,'load_rfm_model',lambda *args:pytest.fail('Empty period must not load model'))
-    monkeypatch.setattr(DataFrameWriter,'parquet',lambda writer,path:writes.append((path,writer._df)))
+    def write(result, output, run_date, k, model_version):
+        validate_rfm_output(result, run_date, k, model_version)
+        writes.append({r.CustomerID: r for r in result.collect()})
+        return output + '/run_date=' + run_date
+
+    monkeypatch.setattr(job, 'parse_args', lambda: args)
+    monkeypatch.setattr(job, 'SparkSession', SimpleNamespace(builder=Builder()))
+    monkeypatch.setattr(spark, 'stop', lambda: None)
+    monkeypatch.setattr(job, 'ingest_store', ingest)
+    monkeypatch.setattr(job, 'read_store_table', read)
+    monkeypatch.setattr(job, 'load_rfm_model', load)
+    monkeypatch.setattr(job, 'write_rfm', write)
+    for estimator in (Pipeline, KMeans, StandardScaler):
+        monkeypatch.setattr(estimator, 'fit', lambda *a: pytest.fail('Daily refit'))
     job.main()
-    assert writes[0][0] == 'out/run_date=2011-12-12'
-    assert writes[0][1].isEmpty()
-    types = dict(writes[0][1].dtypes)
-    assert types['Cluster'] == 'int' and types['model_version'] == 'string'
+    ingest.assert_called_once_with(spark, 'new', 'store', 'b1',
+                                   '2011-12-12', False, None)
+    read.assert_called_once_with(spark, manifest, 'state')
+    load.assert_called_once_with('model')
+    actual = writes[0]
+    assert set(actual) == ({'A', 'B', 'C'} if has_new_customer else {'A', 'B'})
+    for customer in ('A', 'B'):
+        assert actual[customer].Recency == before[customer].Recency + 1
+        assert actual[customer].Frequency == before[customer].Frequency
+        assert actual[customer].Monetary == before[customer].Monetary
+    assert all(r.model_version == 'v1' and r.Cluster is not None
+               for r in actual.values())
 
 
 @pytest.fixture(params=['memory', 'disk'])
@@ -1000,8 +1022,6 @@ def test_store_real_roundtrip_retry_overlap_and_snapshot(spark, tmp_path, storag
     assert actual.exceptAll(expected).isEmpty() and expected.exceptAll(actual).isEmpty()
     old, _ = read_store_rfm(spark,store,'2011-12-11')
     assert old.count() == 2 and old.where("CustomerID='A'").first().Frequency == 1
-    assert set(r.CustomerID for r in read_store_active(spark,updated,'2011-12-11','2011-12-12').collect()) == {'A','C'}
-    assert read_store_active(spark,updated,'2011-12-13','2011-12-14').isEmpty()
     # Untouched date partitions are referenced rather than rewritten.
     for key, old_bucket in initial['buckets'].items():
         if '2011-12-09' in old_bucket['transactions']:
@@ -1087,7 +1107,6 @@ def test_cli_defaults_and_explicit_overrides():
     assert args.store_path == str(DATA_ROOT / 'curated' / 'rfm_store')
     assert args.output == str(DATA_ROOT / 'rfm')
     assert args.num_buckets is None
-    assert args.period_start == '2011-12-11'
     explicit = parse_args(["--input", "new", "--batch-id", "b1"] + ['--run-date','2011-12-12','--model-path','models/v1',
                           '--model-version','release1','--output','out','--store-path','existing'])
     assert (explicit.model_version,explicit.output,explicit.store_path)==('release1','out','existing')
@@ -1095,9 +1114,9 @@ def test_cli_defaults_and_explicit_overrides():
     assert monthly.store_path == args.store_path and monthly.num_buckets is None
 
 @pytest.mark.parametrize('day', ['2011-02-30','20111212'])
-def test_cli_invalid_cutoff_with_explicit_period(day):
+def test_cli_invalid_cutoff(day):
     with pytest.raises(SystemExit):
-        parse_args(["--input", "new", "--batch-id", "b1"] + ['--run-date',day,'--period-start','2011-12-01','--model-path','models/v1'])
+        parse_args(["--input", "new", "--batch-id", "b1"] + ['--run-date',day,'--model-path','models/v1'])
 
 def test_store_infers_existing_bucket_count(spark,tmp_path,storage):
     first,store=[str(tmp_path / p) for p in ('seed','store')]
@@ -1117,3 +1136,15 @@ def test_daily_cli_requires_input_and_batch_but_training_can_read_store():
     assert (daily.input,daily.batch_id)==('new','b1')
     monthly = training_args(['--run-date','2012-01-01','--k','4','--model-output','models/v2'])
     assert monthly.input is None and monthly.batch_id is None
+
+
+@pytest.mark.parametrize("removed", [
+    ["--all-customers"], ["--period-start", "2011-12-01"],
+])
+def test_daily_cli_rejects_obsolete_population_flags(removed, capsys):
+    base = ["--input", "batch", "--batch-id", "b1",
+            "--run-date", "2011-12-12", "--model-path", "models/v1"]
+    with pytest.raises(SystemExit) as error:
+        parse_args(base + removed)
+    assert error.value.code == 2
+    assert "unrecognized arguments" in capsys.readouterr().err

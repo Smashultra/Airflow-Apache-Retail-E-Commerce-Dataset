@@ -3,12 +3,13 @@
 Training import helper từ file này; chỉ main() bên dưới chạy daily.
 """
 import argparse
+import sys
 import logging
 import hashlib
 import json
 import re
 from uuid import uuid4
-from datetime import date, timedelta
+from datetime import date
 from functools import reduce
 from pathlib import Path
 
@@ -41,7 +42,7 @@ LOG_FEATURES = ["Recency_log", "Frequency_log", "Monetary_log"]
 # 1. Tham số chạy daily và kiểm tra ngày chốt.
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
-        description="Compute RFM metrics from curated transactions."
+        description="Ingest a curated batch and score every historical customer."
     )
     parser.add_argument(
         "--input",
@@ -64,7 +65,7 @@ def parse_args(argv=None):
                         help="Optional label; defaults to the model directory name.")
     add_store_arguments(parser, daily=True)
     args = parser.parse_args(argv)
-    validate_store_arguments(parser, args, daily=True)
+    validate_store_arguments(parser, args)
     if not args.model_path.strip() or not args.output.strip():
         parser.error("--model-path and --output must not be blank.")
     # Ví dụ models/v1 hoặc models/v1/ đều cho model_version = v1.
@@ -76,20 +77,18 @@ def parse_args(argv=None):
 
 
 def add_store_arguments(parser, daily=False):
-    """Các tham số cho curated incremental và kỳ phân nhóm."""
+    """Tham số store dùng chung; daily bắt buộc batch-id."""
+    # store path là đường dẫn tới incremental store
     parser.add_argument('--store-path', default=str(DATA_ROOT / 'curated' / 'rfm_store'), help='Incremental curated transactions and customer state.')
     parser.add_argument('--batch-id', required=daily, help='Stable ID; reuse the same ID when retrying a batch.')
+    # initialize-store chỉ dùng để khởi tạo incremental store chưa có
     parser.add_argument('--initialize-store', action='store_true')
-    # None: khởi tạo dùng mặc định; store cũ tự lấy số bucket đã lưu.
+    # None: khởi tạo dùng số bucket mặc định; store cũ tự lấy số bucket đã lưu.
     parser.set_defaults(num_buckets=None)
-    if daily:
-        parser.add_argument('--period-start', help='Inclusive UTC activity date; default run-date minus one day.')
-        parser.add_argument('--all-customers', action='store_true',
-                            help='Explicitly score every historical customer instead of active customers.')
 
 
-def validate_store_arguments(parser, args, daily=False):
-    """Kiểm tra chế độ chạy và khoảng ngày xử lý."""
+def validate_store_arguments(parser, args):
+    """Kiểm tra ngày chốt và các tham số incremental ingestion."""
     try:
         if date.fromisoformat(args.run_date).isoformat() != args.run_date:
             raise ValueError()
@@ -99,22 +98,12 @@ def validate_store_arguments(parser, args, daily=False):
         parser.error('--input must not be blank.')
     if args.store_path is not None and not args.store_path.strip():
         parser.error('--store-path must not be blank.')
-    if bool(args.input) != bool(args.batch_id):
+    if bool(args.input) != bool(args.batch_id): # nếu ctrinh ingest 1 batch mới, nó phải biết data nằm ở đâu và đó là batch nào
         parser.error('Store ingestion requires both --input and --batch-id.')
     if args.batch_id and not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}', args.batch_id):
         parser.error('Invalid --batch-id.')
-    if args.initialize_store and not args.input:
+    if args.initialize_store and not args.input: # nếu khởi tạo mà 0 có input thì lỗi
         parser.error('--initialize-store requires --input and --batch-id.')
-    if daily:
-        try:
-            start = date.fromisoformat(args.period_start) if args.period_start else date.fromisoformat(args.run_date) - timedelta(days=1)
-            if args.period_start and start.isoformat() != args.period_start:
-                raise ValueError()
-            if start >= date.fromisoformat(args.run_date):
-                raise ValueError()
-        except ValueError:
-            parser.error('--period-start must be an ISO date earlier than --run-date.')
-        args.period_start = start.isoformat()
 
 
 # 2. Kiểm tra dữ liệu đầu vào.
@@ -190,7 +179,7 @@ def validate_curated_contract(df: DataFrame) -> None:
             "did not satisfy the curated data contract."
         )
 
-
+# chuẩn hóa giao dịch trước khi đưa vào store
 def normalize_transaction_rows(df: DataFrame) -> DataFrame:
     """Exact-row dedup, retaining all source business columns and invoice lines."""
     validate_curated_contract(df)
@@ -202,25 +191,28 @@ def normalize_transaction_rows(df: DataFrame) -> DataFrame:
             .withColumn("month", F.month("InvoiceDate"))
             .dropDuplicates())
 
-
+# ngăn batch mới có cấu trúc khác store hiện tại
 def _assert_transaction_schema(left: DataFrame, right: DataFrame) -> None:
     def types(df):
         return {field.name: field.dataType for field in df.schema.fields}
     if types(left) != types(right):
         raise ValueError("Stored/input transaction schemas must match, including business columns.")
 
-
+# chuẩn bị filesystem phù hợp với cơ chế update store
 def _store_filesystem(spark: SparkSession, store_path: str):
     path = spark._jvm.org.apache.hadoop.fs.Path(store_path)
-    fs = path.getFileSystem(spark._jsc.hadoopConfiguration())
+    fs = path.getFileSystem(spark._jsc.hadoopConfiguration()) # xác định filesystem quản lý đường dẫn
+    # hdfs:///data/curated/rfm_store là Hadoop Distributed File System
+    # file:///data/curated/rfm_store là local filesystem
     if fs.getUri().getScheme() not in ("file", "hdfs"):
         raise ValueError("The incremental store requires file/HDFS atomic rename semantics.")
     return fs, fs.makeQualified(path)
 
-
+# tránh các đường dẫn input, store, output, model đè lên nhau
 def assert_separate_paths(spark: SparkSession, first: str, second: str) -> None:
     """Prevent input/store from overlapping paths that a job can replace."""
-    def qualify(value):
+    def qualify(value): # chuyển path về bộ ba (scheme, authority, path)
+        # vd ("file", "null", "/data/curated")
         path = spark._jvm.org.apache.hadoop.fs.Path(value)
         fs = path.getFileSystem(spark._jsc.hadoopConfiguration())
         uri = fs.makeQualified(path).toUri().normalize()
@@ -258,15 +250,16 @@ def select_history(
     return history
 
 # 4. Curated incremental: giao dịch, hóa đơn và state theo khách.
-
+# chuẩn hóa giao dịch trước khi đưa vào store
 def canonical_transactions(df):
     """Kiểm tra dữ liệu sạch; bỏ cột partition khỏi khóa chống trùng."""
     normalized = normalize_transaction_rows(df)
-    if 'transaction_date' in df.columns or '_customer_bucket' in df.columns:
+    if 'transaction_date' in df.columns or '_customer_bucket' in df.columns: # input k được có 2 cột này vì chúng được dành cho metadata của store
         raise ValueError('transaction_date/_customer_bucket are reserved store columns.')
     return normalized.drop('year', 'month').dropDuplicates()
+# dataframe chỉ giữ các cột giao dịch chuẩn, 0 mang metadata partition
 
-
+# tạo trạng thái RFM ban đầu, khởi tạo customer state từ dữ liệu lịch sử
 def customer_state(transactions):
     """Khởi tạo F, tổng tiền và ngày mua cuối từ lịch sử."""
     amount = F.col('Quantity').cast('decimal(18,4)') * F.col('UnitPrice').cast('decimal(18,4)')
@@ -276,7 +269,7 @@ def customer_state(transactions):
         F.sum(amount).alias('MonetaryTotal'),
     )
 
-
+# chuyển customer state thành RFM snapshot, chỉ lấy customer state đã có và tính thêm recency
 def state_to_rfm(state, run_date):
     """Lấy F/M từ state; chỉ tính Recency và làm tròn tiền, không cộng lại."""
     return state.select(
@@ -287,35 +280,30 @@ def state_to_rfm(state, run_date):
     )
 
 
-def active_customers(transactions, period_start, run_date):
-    """Chọn khách mua trong [period_start, run_date)."""
-    return transactions.where(
-        (F.col('InvoiceDate') >= F.lit(period_start).cast('timestamp')) &
-        (F.col('InvoiceDate') < F.lit(run_date).cast('timestamp'))
-    ).select('CustomerID').distinct()
-
-
 def advance_state(old_state, old_invoices, novel):
     """Cập nhật state bằng các dòng thực sự mới; không đếm lại hóa đơn cũ."""
-    # novel chỉ chứa giao dịch chưa từng được ghi nhận.
+    # novel chỉ chứa giao dịch chưa từng được ghi nhận. (lấy ds hóa đơn từ dữ liệu mới)
     invoices = novel.select('CustomerID', 'InvoiceNo').distinct()
     if old_state is None:
         return customer_state(novel), invoices
-    # Một hóa đơn có thể có dòng sản phẩm đến ở nhiều batch.
+    # xác định hóa đơn chưa từng được đếm
     new_invoices = invoices.join(old_invoices, ['CustomerID', 'InvoiceNo'], 'left_anti')
+    # đếm số invoices của each customer, monetary và ngày mua mới
     counts = new_invoices.groupBy('CustomerID').agg(F.count('*').alias('_new_frequency'))
     amount = F.col('Quantity').cast('decimal(18,4)') * F.col('UnitPrice').cast('decimal(18,4)')
     increments = novel.groupBy('CustomerID').agg(
         F.max('InvoiceDate').alias('_last'), F.sum(amount).alias('_money'))
-    increments = increments.join(counts, 'CustomerID', 'left')
-    # Khách cũ được cộng phần mới; khách mới được thêm vào state.
+    # chương trình tính phần thay đổi từ all new rows, kể cả row thuộc hóa đơn đã tồn tại
+    increments = increments.join(counts, 'CustomerID', 'left') # gheps new invoice vao increments
+    # Khách cũ được cộng phần mới; khách mới được thêm vào state (ghep state cu vao increments moi)
     updated = old_state.join(increments, 'CustomerID', 'full').select(
-        'CustomerID', F.greatest('LastPurchaseDate', '_last').alias('LastPurchaseDate'),
+        'CustomerID', F.greatest('LastPurchaseDate', '_last').alias('LastPurchaseDate'), # update LastPurchaseDate
         (F.coalesce(F.col('Frequency'), F.lit(0)) + F.coalesce(F.col('_new_frequency'), F.lit(0))).cast('long').alias('Frequency'),
         (F.coalesce(F.col('MonetaryTotal'), F.lit(0)).cast('decimal(37,8)') +
          F.coalesce(F.col('_money'), F.lit(0)).cast('decimal(37,8)')).cast('decimal(38,8)').alias('MonetaryTotal'),
     )
-    return updated, old_invoices.unionByName(invoices).dropDuplicates()
+    return updated, old_invoices.unionByName(invoices).dropDuplicates() # update ds invoices known
+# hàm trả về 2 df: updated là customer state mới, và ds hóa đơn đã biết sau khi bổ sung batch mới
 
 
 def _fingerprint(df):
@@ -397,17 +385,6 @@ def read_store_rfm(spark, store_path, run_date):
     """Đọc state rồi dựng RFM tại ngày chốt."""
     manifest = load_manifest(spark, store_path, run_date)
     return state_to_rfm(read_store_table(spark, manifest, 'state'), run_date), manifest
-
-
-def read_store_active(spark, manifest, period_start, run_date):
-    """Chỉ đọc giao dịch trong kỳ để tìm khách cần phân nhóm."""
-    paths = [path for bucket in manifest['buckets'].values()
-             for day, path in bucket['transactions'].items()
-             if period_start <= day < run_date]
-    if not paths:
-        return read_store_table(spark, manifest, 'state').select('CustomerID').limit(0)
-    transactions = reduce(lambda a, b: a.unionByName(b), [spark.read.parquet(path) for path in paths])
-    return active_customers(transactions, period_start, run_date)
 
 
 def _update_store_bucket(spark, fs, generation, key, delta, old):
@@ -547,7 +524,7 @@ def ingest_store(spark, input_path, store_path, batch_id, run_date,
         fs.delete(lock, False)
 
 
-# 5. Tính RFM từ toàn bộ giao dịch (chế độ snapshot cũ).
+# Tính RFM từ giao dịch: dùng khi chọn k và đối chiếu với incremental.
 def compute_rfm(
     history: DataFrame,
     run_date: str,
@@ -630,7 +607,7 @@ def add_rfm_scores(rfm: DataFrame) -> DataFrame:
                    for c in ("R_score", "F_score", "M_score"))),
     )
 
-# Shared log features for offline k selection, training and daily scoring.
+# Log features dùng chung cho chọn k, training và daily scoring.
 def prepare_kmeans_features(rfm: DataFrame) -> DataFrame:
     """Validate metrics and apply stateless log1p; never fit a scaler here."""
     invalid = F.lit(False)
@@ -648,7 +625,6 @@ def prepare_kmeans_features(rfm: DataFrame) -> DataFrame:
         .withColumn("Monetary_log", F.log1p(F.col("Monetary").cast("double")))
     )
 
-
 def kmeans_feature_pipeline() -> Pipeline:
     """Assembles the *_log columns into a vector and standard-scales them
     (no KMeans stage). Fit once and reuse across every k you try.
@@ -664,7 +640,7 @@ def kmeans_feature_pipeline() -> Pipeline:
     return Pipeline(stages=[assembler, scaler])
 
 
-# 5b. Load the fitted training pipeline and score current customers.
+# Load model đã training; daily chỉ transform.
 def load_rfm_model(model_path: str) -> PipelineModel:
     """Fail fast if the artifact does not follow the shared feature contract."""
     model = PipelineModel.load(model_path)
@@ -725,7 +701,7 @@ def apply_rfm_model(rfm: DataFrame, model: PipelineModel) -> DataFrame:
     )
 
 
-# Check results before writing to output folder
+# Kiểm tra kết quả trước khi ghi output.
 def validate_rfm_output(result: DataFrame, run_date: str, k: int,
                         model_version: str | None = None) -> None:
     """Reject invalid output before replacing a daily partition."""
@@ -816,7 +792,17 @@ def write_rfm(
     return output_path
 
 
-# 7. Daily: cập nhật state, chọn khách trong kỳ rồi phân nhóm.
+def daily_rfm_population(spark, manifest, run_date):
+    """Score the complete committed state, including customers idle today.
+
+    F/M are cumulative; only Recency is recomputed at the daily cutoff.
+    Never read activity partitions or restrict the model's input population.
+    """
+    population = state_to_rfm(read_store_table(spark, manifest, 'state'), run_date)
+    return add_rfm_scores(population)
+
+
+# 7. Daily: cập nhật incremental state rồi phân nhóm toàn bộ khách.
 def main():
     args = parse_args()
     spark = None
@@ -842,23 +828,7 @@ def main():
             spark, args.input, args.store_path, args.batch_id,
             args.run_date, args.initialize_store, args.num_buckets,
         )
-        population = state_to_rfm(
-            read_store_table(spark, manifest, 'state'), args.run_date)
-        active = None if args.all_customers else read_store_active(
-            spark, manifest, args.period_start, args.run_date)
-        # Điểm RFM tham chiếu toàn bộ khách; KMeans dùng log RFM, không dùng điểm.
-        # F/M đã tích lũy trong state, không cộng lại giao dịch ở đây.
-        rfm = add_rfm_scores(population)
-        if active is not None:
-            rfm = rfm.join(active, 'CustomerID', 'left_semi')
-        if rfm.isEmpty():
-            logger.info('No active customers in [%s, %s); writing empty dated result.',
-                        args.period_start, args.run_date)
-            empty = (rfm.withColumn('Cluster', F.lit(None).cast('int'))
-                     .withColumn('model_version', F.lit(args.model_version)))
-            empty.drop('run_date').write.mode('overwrite').parquet(
-                f"{args.output.rstrip('/')}/run_date={args.run_date}")
-            return
+        rfm = daily_rfm_population(spark, manifest, args.run_date)
         model = load_rfm_model(args.model_path)
         k = model.stages[-1].getK() # stage cuối KMeansModel, lấy số cụm đã được cấu hình trong model
         result = score_rfm_with_model( # chấm điểm và socring -> output gồm metrics, điểm, Cluster và version
@@ -892,11 +862,8 @@ def main():
             # finally bảo đảm vẫn cố dừng Spark ngay cả khi việc giải phóng cache gặp lỗi
 
 if __name__ == "__main__":
-    import sys
-
     if "--pipeline-context" in sys.argv:
         from retail_pipeline import pipeline_main
-
         pipeline_main("rfm")
     else:
         main()
