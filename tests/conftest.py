@@ -1,5 +1,6 @@
 """Make the same mounted modules importable in host and Docker tests."""
 
+import tests._airflow_env
 import sys
 from pathlib import Path
 
