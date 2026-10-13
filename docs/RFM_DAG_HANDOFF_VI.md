@@ -1,283 +1,171 @@
-# Hướng dẫn vận hành PySpark RFM và ghép DAG
+# Bàn giao RFM cho người làm DAG
 
-Cập nhật: 2026-10-10. Tài liệu đối chiếu với code hiện tại trong `scripts/`.
-Dành cho người nhận phần RFM để tích hợp vào DAG daily và training định kỳ.
-Các lệnh dưới đây là hướng dẫn chạy, chưa phải bằng chứng đã chạy thành công end-to-end.
+Cập nhật: 13/10/2026. Source đã push lên `main` tại commit `40bbca2`.
 
-## 1. Nhận đúng bộ file
+## 1. Mục tiêu và trạng thái bàn giao
 
-| File | Vai trò |
-|---|---|
-| `scripts/pyspark_rfm.py` | Helper dùng chung, ingest store, tính RFM, daily load model và phân cụm |
-| `scripts/train_rfm_kmeans.py` | Import helper ở trên, fit và lưu model mới |
-| `tests/test_pyspark_rfm.py` | Kiểm thử hợp đồng dữ liệu, CLI, RFM, model và store |
-| `Dockerfile`, `requirements.txt`, `docker-compose.yaml` | Môi trường chạy và mount dữ liệu/scripts |
+Daily tiếp nhận batch curated mới, cập nhật incremental store, rồi scoring **toàn bộ khách hàng có lịch sử mua hợp lệ trong store** bằng model KMeans đã lưu. Khách không mua trong ngày vẫn xuất hiện trong output. Training KMeans là job riêng.
 
-Không lấy `.agent/backups/rfm_cli_20261008/pyspark_rfm.py` làm source triển khai:
-đó là bản trước khi đơn giản hóa CLI, suy ra bucket count và bắt buộc input daily.
-Tài liệu cũ `RFM_INCREMENTAL_VI.md` còn ví dụ daily không có input; ví dụ đó không còn hợp lệ.
+| File | Trách nhiệm |
+| --- | --- |
+| `scripts/pyspark_rfm.py` | Ingest incremental, tính RFM, load model, daily scoring và ghi output |
+| `scripts/train_rfm_kmeans.py` | Fit và lưu một phiên bản model mới; dùng chung helper RFM |
+| `tests/test_pyspark_rfm.py` | Kiểm tra dữ liệu, tính RFM, CLI, model và incremental store |
 
-**Cập nhật tích hợp 2026-10-11:** `pyspark_rfm.py` nhận thêm nhánh
-`--pipeline-context` để gọi adapter `retail_pipeline` của DAG hiện có. Nhánh này
-đọc snapshot ETL đầy đủ, dùng model registry đã đóng băng và xuất stage manifest
-cho downstream/publish; chưa chuyển DAG sang incremental store. Training DAG
-gọi `retail_training.py`, dùng chung hàm fit của `train_rfm_kmeans.py`.
-CLI incremental bên dưới vẫn giữ nguyên hợp đồng, daily không nhận `--k`.
-Muốn chuyển DAG sang CLI incremental cần thực hiện đầy đủ mục 6, gồm hợp đồng
-batch, store, model và publication; không chỉ đổi tên script trong `spark_job`.
+Dùng các file trong `scripts/` và `tests/`, không dùng file trong `.agent/backups/`.
 
-## 2. Luồng vận hành
+**Điểm cần nối khi làm DAG:** luồng CLI standalone của `pyspark_rfm.py` đã chạy incremental và all customers. Khi truyền `--pipeline-context`, script chuyển sang `retail_pipeline.pipeline_main("rfm")`. Tại bản upstream làm nền cho commit này (`5817dfb`), adapter đó vẫn đọc lịch sử curated và tính lại RFM bằng `compute_rfm`, chưa dùng incremental store. Các thay đổi adapter/DAG ở checkout local không được đưa vào commit RFM.
+
+Người làm DAG cần chọn một trong hai cách:
+
+1. Gọi CLI standalone bằng task submit Spark, sau đó bổ sung publication/output theo hợp đồng DAG của nhóm.
+2. Cập nhật adapter `retail_pipeline.run_rfm` để dùng incremental store, đồng thời giữ model registry, labels, cluster profile và publication manifests hiện có.
+
+Không coi việc gọi `--pipeline-context` hiện tại là đã hoàn tất tích hợp incremental. Hai API `fit_rfm_model` và `apply_rfm_model` được giữ để tương thích với training/model registry của nhóm.
+
+## 2. Luồng cần triển khai
 
 ```text
-Lần đầu:
-Curated lịch sử sạch -> training --initialize-store -> store + model v1
-                                                    |
-Daily:                                              v
-Batch curated mới -> ingest vào cùng store -> RFM tích lũy -> load model v1
-                                                         -> output theo run_date
+Bootstrap một lần:
+Lịch sử curated đầy đủ -> khởi tạo store + training -> model v1
 
-Định kỳ:
-Store đã nạp đủ dữ liệu -> training chỉ đọc -> model v2
-                           kiểm tra đạt -> DAG/config chọn v2 cho các run sau
+Daily:
+Batch curated mới -> kiểm tra/đóng băng context -> cập nhật store
+    -> RFM của toàn bộ khách trong snapshot -> transform model đã lưu
+    -> kiểm tra output -> ghi partition ngày -> publish kết quả
+
+Training định kỳ:
+Snapshot store đủ dữ liệu -> train model mới -> kiểm tra -> công bố model
+    -> áp dụng cho các run daily tiếp theo
 ```
 
-- `pyspark_rfm.py`: chỉ load/transform, không fit lại scaler hoặc KMeans.
-- `train_rfm_kmeans.py`: fit pipeline gồm vector đầu vào, StandardScaler và KMeans.
-  Features dùng log RFM; các điểm `R_score/F_score/M_score` không phải đầu vào KMeans.
-- Lịch monthly là trách nhiệm của DAG; script training không tự lên lịch hoặc tự promote model.
-- Store chia khách vào bucket cố định, lưu giao dịch theo ngày, invoice ledger và state.
-  Batch mới chỉ cập nhật ngày/bucket liên quan; manifest công bố snapshot sau khi ghi xong.
-  Không đọc store bằng cách glob toàn bộ thư mục vì có nhiều thế hệ dữ liệu.
+Giữ xử lý Spark trong `scripts/`; DAG chỉ điều phối và submit job. Không đưa tính toán Spark vào `PythonOperator`.
 
-## 3. Input, cutoff và ý nghĩa output
+## 3. Hợp đồng đầu vào và ngày chốt
 
-Input là **thư mục Parquet đã clean**, không phải CSV raw. Năm cột bắt buộc:
+Input là Parquet sạch, không rỗng, với schema tối thiểu:
 
-| Cột | Spark type | Yêu cầu |
-|---|---|---|
-| CustomerID | string | Không null/rỗng |
-| InvoiceNo | string | Không null/rỗng; giao dịch hủy phải được loại ở cleaning |
-| InvoiceDate | timestamp | Không null; trước cutoff |
-| Quantity | int | Dương |
-| UnitPrice | double | Dương, hữu hạn |
+| Cột | Spark type | Điều kiện |
+| --- | --- | --- |
+| `CustomerID` | string | Không null/rỗng |
+| `InvoiceNo` | string | Không null/rỗng; đã loại giao dịch hủy |
+| `InvoiceDate` | timestamp | Không null, trước cutoff |
+| `Quantity` | int | > 0 |
+| `UnitPrice` | double | > 0 và hữu hạn |
 
-Giữ schema nghiệp vụ ổn định giữa các batch, kể cả các cột bổ sung như StockCode,
-Description. `year/month` được chuẩn hóa, không thuộc khóa chống trùng;
-`transaction_date` và `_customer_bucket` là tên dành riêng, không được có trong input.
-Cleaning chịu trách nhiệm loại dòng không hợp lệ/phí dịch vụ theo quy tắc dự án.
+Giữ schema nghiệp vụ ổn định giữa các batch, gồm cả các cột bổ sung. Không đưa các cột dành riêng `batch_id`, `transaction_date`, `_customer_bucket` vào input. Cleaning chịu trách nhiệm áp dụng quy tắc loại giao dịch không hợp lệ của dự án.
 
-`--run-date D` là **00:00 UTC của D, loại trừ D**. Ví dụ xử lý ngày 2011-12-09:
-cutoff là `2011-12-10`, cửa sổ khách hoạt động mặc định `[2011-12-09, 2011-12-10)`.
-Không dùng ngày đồng hồ hiện tại thay cho ngày dữ liệu khi backfill. Input chứa
-`InvoiceDate >= cutoff` bị từ chối, không tự lọc bỏ; hãy chuẩn bị batch đúng cutoff.
+`--run-date D` nghĩa là cutoff **00:00 UTC của D**, chỉ nhận giao dịch `InvoiceDate < D`. Ví dụ batch ngày `2011-12-10` được scoring tại cutoff `2011-12-11`. Input có giao dịch tại/sau cutoff bị từ chối.
 
-RFM của mỗi khách được tính trên lịch sử tích lũy trong snapshot:
+DAG lấy cutoff từ khoảng dữ liệu của run và chuẩn hóa về UTC; không lấy ngày đồng hồ hiện tại cho retry/backfill. Chỉ cho downstream chạy khi upstream xác nhận dữ liệu trước cutoff đã đầy đủ.
 
-- Recency: số ngày từ ngày mua gần nhất tới cutoff.
-- Frequency: số InvoiceNo khác nhau của khách, không phải số dòng sản phẩm.
-- Monetary: cộng Quantity × UnitPrice bằng decimal (cast mỗi toán hạng về decimal(18,4)),
-  giữ tổng chưa làm tròn trong state và làm tròn 2 chữ số khi xuất RFM.
-- Điểm R/F/M: percent_rank trên toàn bộ khách trong state, rồi mới lọc khách hoạt động.
-  R thấp tốt hơn, F/M cao tốt hơn; metric đồng hạng toàn bộ nhận điểm 1.
-- Mặc định chỉ xuất khách có mua trong cửa sổ hoạt động, nhưng RFM của họ vẫn tích lũy.
-  `--period-start` mở rộng cửa sổ; `--all-customers` xuất mọi khách trong snapshot.
-- Cluster là ID số từ model; không mặc định mang nghĩa VIP/churn. ID giữa hai model
-  không nhất thiết tương đương. Daily có thể chỉ xuất một phần số cụm đã train.
+## 4. Tham số của task daily
 
-Output: `<output>/run_date=YYYY-MM-DD/`, gồm CustomerID, LastPurchaseDate,
-Recency, Frequency, Monetary, R_score, F_score, M_score, RFM_score, Cluster,
-model_version. `run_date` là cột partition: đọc từ output root để Spark suy ra cột này;
-nếu chỉ đọc thư mục ngày thì đặt `basePath` là output root hoặc tự bổ sung ngày.
-Rerun ghi đè đúng partition ngày đó, giữ các ngày khác. Output không phải giao dịch
-nguyên tử chung với store: store có thể đã commit trong khi scoring/output thất bại.
+| Tham số | Cách truyền |
+| --- | --- |
+| `--input` | Bắt buộc: đường dẫn batch curated đã đóng băng |
+| `--batch-id` | Bắt buộc: ID cố định cho cùng batch và cutoff |
+| `--run-date` | Bắt buộc: cutoff `YYYY-MM-DD` |
+| `--store-path` | Nên truyền rõ: store chung, bền vững, dùng xuyên các run |
+| `--output` | Nên truyền rõ: output root |
+| `--model-path` | Bắt buộc: thư mục PipelineModel đã được công bố |
+| `--model-version` | Nên truyền rõ theo registry; mặc định lấy tên thư mục model |
+| `--initialize-store` | Chỉ bootstrap store chưa có, bằng lịch sử đầy đủ |
 
-## 4. Tham số cần truyền
+Daily không nhận `--k`, `--seed`, `--all-customers`, `--period-start`, `--num-buckets`. Lấy k từ model; store mới mặc định 64 bucket, store cũ giữ cấu hình đã lưu.
 
-| Tham số | Daily | Training |
-|---|---|---|
-| `--input` | Bắt buộc, curated batch | Tùy chọn; bỏ để chỉ đọc store |
-| `--batch-id` | Bắt buộc | Bắt buộc khi có input |
-| `--run-date` | Bắt buộc, YYYY-MM-DD | Bắt buộc, YYYY-MM-DD |
-| `--store-path` | Mặc định `<project>/data/curated/rfm_store` | Cùng mặc định |
-| `--initialize-store` | Chỉ khi khởi tạo store | Thường dùng khi bootstrap lần đầu |
-| `--output` | Mặc định `<project>/data/rfm` | Không nhận |
-| `--model-path` | Bắt buộc, model đã fit | Không nhận |
-| `--model-version` | Tùy chọn, mặc định tên thư mục model | Không nhận |
-| `--period-start` | Mặc định D−1, phải trước D | Không nhận |
-| `--all-customers` | Tùy chọn | Không nhận; training dùng population |
-| `--k` | Không nhận; lấy từ model | Bắt buộc, ít nhất 2 |
-| `--seed` | Không nhận | Mặc định 42 |
-| `--model-output` | Không nhận | Bắt buộc, đường dẫn mới chưa tồn tại |
+Batch ID dài 1–128 ký tự, bắt đầu bằng chữ/số, chỉ chứa chữ/số, `_`, `-`. Ví dụ `source_v1_day_2011_12_10`; không gắn số attempt hoặc timestamp chạy lại.
 
-Trong DAG nên truyền rõ các đường dẫn tuyệt đối bên trong container. Không còn flag
-`--num-buckets`: store mới mặc định 64; CLI tự dùng bucket count của store đã có.
-Batch ID dài 1–128 ký tự, bắt đầu bằng chữ/số, chỉ gồm chữ/số/`_`/`-`.
+Các đường dẫn input/store/output/model phải tách biệt. Store hiện hỗ trợ filesystem local hoặc HDFS với atomic rename; nếu chạy nhiều container, mọi task phải truy cập cùng vùng lưu trữ bền vững. Không dùng thư mục tạm riêng của worker.
 
-## 5. Chạy thủ công bằng PowerShell và Docker
+## 5. Lệnh mẫu để đưa vào task submit Spark
 
-Chạy từ repository trên máy host. Docker Desktop phải hoạt động và image đã build.
-Compose mount `scripts` vào `/opt/airflow/scripts`, `data` vào `/opt/airflow/data`.
-Các lệnh dùng service `airflow-scheduler` làm container chạy Spark một lần;
-`--no-deps` không khởi động các service Airflow/Postgres phụ thuộc.
-Repo hiện pin PySpark 4.2.0, Spark provider 6.3.2 và cài Java 17 trong Dockerfile.
+Các lệnh dưới đây chạy **bên trong container**, với scripts tại `/opt/airflow/scripts` và data tại `/opt/airflow/data`. Đường dẫn và ngày là ví dụ; dữ liệu phải tồn tại và đúng cutoff. `k=4` chỉ là ví dụ, cần dùng k đã chọn bởi người phụ trách RFM.
 
-```powershell
-docker compose build airflow-scheduler
-docker compose run --rm --no-deps airflow-scheduler spark-submit --version
-docker compose run --rm --no-deps airflow-scheduler python /opt/airflow/scripts/pyspark_rfm.py --help
-docker compose run --rm --no-deps airflow-scheduler python /opt/airflow/scripts/train_rfm_kmeans.py --help
+### Bootstrap store và model đầu tiên
+
+```bash
+spark-submit --master 'local[2]' \
+  --py-files /opt/airflow/scripts/pyspark_rfm.py \
+  /opt/airflow/scripts/train_rfm_kmeans.py \
+  --input /opt/airflow/data/curated/seed_before_2011_12_10.parquet \
+  --store-path /opt/airflow/data/curated/rfm_store \
+  --batch-id seed_before_2011_12_10 \
+  --initialize-store --run-date 2011-12-10 \
+  --k 4 --seed 42 \
+  --model-output /opt/airflow/data/models/rfm_kmeans/v1
 ```
 
-### Bước A — Bootstrap lịch sử và model đầu tiên
+Chạy một lần với store/model path mới. Chỉ công bố model sau khi job hoàn tất cả PipelineModel và audit `rfm_training_info`. Nếu training thất bại sau khi store đã commit, lần chạy lại bỏ `--initialize-store`, giữ nguyên input/batch-id/cutoff; kiểm tra artifact model dở dang và dùng model-output mới nếu đường dẫn đã tồn tại.
 
-Ví dụ giả định `data/curated/RFM.parquet` đã tồn tại, không rỗng, đúng schema và
-chỉ chứa giao dịch trước 2011-12-10. Đây là demo trên lịch sử, không phải đánh giá
-model ngoài mẫu. `k=4` là ví dụ: cần chọn k bằng phân tích và đủ khách/vector khác nhau.
-Store `rfm_store_handoff` và model `handoff_v1` phải là đường dẫn mới cho lần đầu.
+### Daily sau bootstrap
 
-```powershell
-docker compose run --rm --no-deps airflow-scheduler spark-submit --master "local[2]" --driver-memory 3g --py-files /opt/airflow/scripts/pyspark_rfm.py /opt/airflow/scripts/train_rfm_kmeans.py --input /opt/airflow/data/curated/RFM.parquet --store-path /opt/airflow/data/curated/rfm_store_handoff --batch-id seed_before_2011_12_10 --initialize-store --run-date 2011-12-10 --k 4 --seed 42 --model-output /opt/airflow/data/models/rfm_kmeans/handoff_v1
+```bash
+spark-submit --master 'local[2]' \
+  /opt/airflow/scripts/pyspark_rfm.py \
+  --input /opt/airflow/data/curated/batch_2011_12_10.parquet \
+  --store-path /opt/airflow/data/curated/rfm_store \
+  --batch-id source_v1_day_2011_12_10 \
+  --run-date 2011-12-11 \
+  --model-path /opt/airflow/data/models/rfm_kmeans/v1 \
+  --model-version v1 \
+  --output /opt/airflow/data/analytics/rfm_daily
 ```
 
-Model lưu cả pipeline. Audit ở `<model-output>/rfm_training_info/` là thư mục text
-có part file JSON ghi cutoff, k, seed, store_version, store_path và log_features.
-Đợi task training hoàn tất cả model lẫn audit trước khi dùng model.
+### Training định kỳ từ store
 
-### Bước B — Demo daily bằng chính batch đã bootstrap
-
-CLI daily luôn cần input. Dùng lại **đúng input, batch-id, cutoff** ở bước A sẽ
-đọc snapshot của batch đã commit, không cộng đôi lịch sử. Không cần initialize lại.
-
-```powershell
-docker compose run --rm --no-deps airflow-scheduler spark-submit --master "local[2]" --driver-memory 3g /opt/airflow/scripts/pyspark_rfm.py --input /opt/airflow/data/curated/RFM.parquet --store-path /opt/airflow/data/curated/rfm_store_handoff --batch-id seed_before_2011_12_10 --run-date 2011-12-10 --output /opt/airflow/data/rfm_handoff --model-path /opt/airflow/data/models/rfm_kmeans/handoff_v1 --model-version handoff_v1
+```bash
+spark-submit --master 'local[2]' \
+  --py-files /opt/airflow/scripts/pyspark_rfm.py \
+  /opt/airflow/scripts/train_rfm_kmeans.py \
+  --store-path /opt/airflow/data/curated/rfm_store \
+  --run-date 2012-01-01 --k 4 --seed 42 \
+  --model-output /opt/airflow/data/models/rfm_kmeans/v2
 ```
 
-Kết quả là khách mua ngày 2011-12-09 với RFM tích lũy. Thêm `--all-customers` nếu
-muốn kiểm tra toàn bộ khách; việc này ghi đè cùng partition nếu giữ nguyên output.
+Không truyền input/batch-id khi training chỉ đọc store. Script chọn snapshot có cutoff không vượt ngày yêu cầu, tính Recency tại cutoff training rồi fit. DAG phải kiểm chứng độ đầy đủ của snapshot; script không biết dữ liệu upstream còn thiếu. Model-output phải là đường dẫn mới; không ghi đè phiên bản đã phát hành.
 
-### Bước C — Daily khi có batch mới
+Với Spark chạy ngoài container submit, phân phối helper cho training qua `--py-files` và bảo đảm data/model/store truy cập được từ môi trường thực thi.
 
-Ví dụ sau **chỉ chạy khi đã có** `data/curated/batch_2011_12_10.parquet`, đúng schema,
-không rỗng và chứa giao dịch trước 2011-12-11. Không giả định dataset gốc có ngày này.
-Upstream phải giữ batch bất biến để retry dùng lại được cùng nội dung.
+## 6. Output, retry và điều phối
 
-```powershell
-docker compose run --rm --no-deps airflow-scheduler spark-submit --master "local[2]" --driver-memory 3g /opt/airflow/scripts/pyspark_rfm.py --input /opt/airflow/data/curated/batch_2011_12_10.parquet --store-path /opt/airflow/data/curated/rfm_store_handoff --batch-id day_2011_12_10 --run-date 2011-12-11 --output /opt/airflow/data/rfm_handoff --model-path /opt/airflow/data/models/rfm_kmeans/handoff_v1 --model-version handoff_v1
+Output standalone: `<output>/run_date=YYYY-MM-DD/`, gồm `CustomerID`, `LastPurchaseDate`, `Recency`, `Frequency`, `Monetary`, `R_score`, `F_score`, `M_score`, `RFM_score`, `Cluster`, `model_version`. `run_date` là cột partition; đọc từ output root hoặc dùng `basePath` để khôi phục cột này.
+
+Frequency đếm hóa đơn riêng biệt theo khách; Monetary tích lũy và làm tròn khi xuất. Recency tính lại mỗi ngày. Điểm R/F/M tham chiếu toàn bộ population; model dùng log RFM với scaler/centroids đã fit. Daily không gọi fit. Cluster ID không tự mang nghĩa VIP/churn và không nhất thiết tương đương giữa hai phiên bản model.
+
+Quy tắc retry:
+
+- Giữ cố định input và nội dung, batch-id, cutoff, model-path, model-version trong mọi attempt của một run. Đóng băng model binding trước scoring, không đọc lại con trỏ “latest” mỗi lần retry.
+- Cùng batch-id và nội dung/cutoff trả lại snapshot đã commit, không cộng đôi F/M. Cùng ID nhưng thay nội dung/cutoff bị lỗi.
+- Store và output không commit chung: scoring có thể thất bại sau khi ingest thành công. Retry dùng snapshot cũ rồi scoring lại.
+- Standalone ghi đè partition cùng ngày. Chỉ publish khi job thành công và output đã được xác minh; adapter dùng publication protocol của nhóm nếu cần output generations bất biến.
+- Chỉ một writer cho mỗi store tại một thời điểm. Dùng Airflow pool riêng cho các task có ingest; giới hạn run để cập nhật theo cutoff tăng dần. Không tự xóa `_writer.lock` khi chưa xác nhận writer cũ đã dừng.
+- Backfill chưa ingest với cutoff thấp hơn snapshot mới nhất bị từ chối. Chạy rebuild trên store riêng theo thứ tự ngày; retry batch đã commit có thể đọc lại đúng snapshot của batch đó.
+- Training đọc snapshot đã commit; nếu chạy chế độ có input thì cũng phải dùng cùng pool writer. Kích hoạt model mới không thay binding của các run đang chạy.
+
+## 7. Ngày không có giao dịch mới: cần xử lý trong adapter
+
+CLI daily hiện bắt buộc input/batch-id và từ chối Parquet rỗng. Vì vậy chưa thể truyền batch rỗng để scoring ngày không có mua mới. Không bỏ qua scoring nếu yêu cầu là mỗi ngày đều có snapshot cho toàn bộ khách.
+
+Người làm DAG cần thêm nhánh đọc store, không ingest khi batch hợp lệ nhưng rỗng. Dùng `load_manifest(spark, store_path, run_date=cutoff)` để lấy snapshot phù hợp, lưu version vào context của run, rồi gọi `daily_rfm_population(spark, manifest, cutoff)` và transform model đã đóng băng. Khi retry phải dùng đúng version đã lưu. Sau đó xác minh và publish theo cùng hợp đồng output. Phân biệt “batch rỗng hợp lệ” với “upstream thiếu/chưa hoàn tất dữ liệu”.
+
+Nhánh này là công việc tích hợp DAG còn cần làm, chưa có trong CLI đã bàn giao. Cần test riêng cho ngày rỗng: đủ khách, F/M không đổi, Recency tăng theo cutoff, không fit model.
+
+## 8. Tiêu chí nghiệm thu DAG
+
+1. Bootstrap hoàn tất, có store và model hợp lệ; daily tiếp theo dùng đúng hai artifact đó.
+2. Batch chỉ có khách A mua mới nhưng output vẫn có khách B không mua; B giữ F/M và cập nhật Recency.
+3. Khách mới được thêm; batch chồng lặp/retry không cộng đôi; hóa đơn nhiều dòng vẫn đếm Frequency đúng.
+4. Daily dùng model/scaler đã lưu, không fit; output có đúng model-version của run.
+5. Retry sau ingest thành công nhưng ghi output thất bại trả kết quả nhất quán; không publish artifact dở dang.
+6. Rerun một ngày giữ các partition ngày khác; backfill không phá store đang vận hành.
+7. Kiểm tra nhánh ngày rỗng, model activation trong lúc retry, writer concurrency và đầy đủ dữ liệu tại cutoff.
+8. Chạy trong Docker: ghi/đọc Parquet thật, lưu/load PipelineModel thật và test toàn luồng DAG.
+
+Kiểm tra bộ RFM trong container đang có môi trường dự án:
+
+```bash
+python -m pytest -q /opt/airflow/tests/test_pyspark_rfm.py
 ```
 
-### Bước D — Training định kỳ từ store
-
-Chỉ chạy sau khi upstream xác nhận đã nạp đủ dữ liệu trước cutoff. Nếu chưa có dữ
-liệu mới, lệnh này chỉ train lại trên lịch sử cũ. Script không kiểm chứng độ đầy đủ.
-
-```powershell
-docker compose run --rm --no-deps airflow-scheduler spark-submit --master "local[2]" --driver-memory 3g --py-files /opt/airflow/scripts/pyspark_rfm.py /opt/airflow/scripts/train_rfm_kmeans.py --store-path /opt/airflow/data/curated/rfm_store_handoff --run-date 2012-01-01 --k 4 --seed 42 --model-output /opt/airflow/data/models/rfm_kmeans/handoff_v2
-```
-
-Không có input/batch-id ở bước D: chọn snapshot mới nhất có cutoff ≤ ngày yêu cầu,
-tính lại Recency tại cutoff rồi fit. Sau kiểm tra, cấu hình các run daily tiếp theo
-trỏ tới v2. Giữ model path/version cố định trong suốt retry của từng run.
-
-## 6. Ghép vào DAG
-
-Giữ Spark computation trong `scripts/`, dùng `SparkSubmitOperator` để gọi job.
-Ví dụ task bên dưới đặt **bên trong DAG đã khai báo**, không phải DAG hoàn chỉnh.
-`params` phải được DAG định nghĩa/kiểm tra trước với đường dẫn, ngày và batch đã đóng băng.
-
-```python
-from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
-
-rfm_daily = SparkSubmitOperator(
-    task_id="rfm_daily",
-    application="/opt/airflow/scripts/pyspark_rfm.py",
-    conn_id="spark_default",
-    deploy_mode="client",
-    driver_memory="3g",
-    pool="retail_spark",
-    pool_slots=1,
-    conf={"spark.sql.session.timeZone": "UTC"},
-    application_args=[
-        "--input", "{{ params.rfm_input }}",
-        "--batch-id", "{{ params.rfm_batch_id }}",
-        "--run-date", "{{ params.rfm_cutoff }}",
-        "--store-path", "/opt/airflow/data/curated/rfm_store_handoff",
-        "--output", "/opt/airflow/data/rfm_handoff",
-        "--model-path", "{{ params.rfm_model_path }}",
-        "--model-version", "{{ params.rfm_model_version }}",
-    ],
-)
-```
-
-Connection `spark_default` trong Compose đang dùng `local[2]`. Tạo pool
-`retail_spark` với **1 slot** nếu chưa có; mọi task RFM ghi chung tài nguyên phải
-dùng pool này. Đặt `max_active_runs=1` cho daily để hạn chế chồng run, nhưng vẫn
-cần pool/dependency chung khi có nhiều DAG. Chạy ingest theo thứ tự cutoff tăng dần;
-giới hạn concurrency một mình không đảm bảo đúng thứ tự backfill.
-
-Task training dùng cùng operator, đổi `application` sang `train_rfm_kmeans.py`,
-thêm `py_files="/opt/airflow/scripts/pyspark_rfm.py"`; args định kỳ gồm
-`--store-path`, `--run-date`, `--k`, `--seed`, `--model-output` như bước D.
-
-Quan hệ task cần thiết:
-
-1. Daily: xác nhận batch sẵn sàng → cleaning ra batch bất biến → RFM → kiểm tra output → publish.
-2. Training: xác nhận các batch trước cutoff đã ingest → training → kiểm tra model/audit → cập nhật model active.
-3. Model đầu tiên được bootstrap trước daily. Các kỳ sau có thể ingest/score batch
-   cuối kỳ bằng model cũ rồi train model mới; tránh vòng phụ thuộc daily đợi model mới
-   trong khi training lại đợi daily ingest.
-
-Với DAG có khoảng dữ liệu UTC `[D, D+1)`, truyền ngày `D+1` làm cutoff, không mặc
-định dùng `ds` là ngày xử lý. Với manual run, nhận cutoff tường minh và kiểm tra.
-Batch ID gắn với dữ liệu nghiệp vụ, không gắn `try_number`. Freeze input, cutoff,
-batch ID và model version để retry không tự đổi sang model vừa được promote.
-
-Publisher hiện tại của DAG dựa trên context/manifests riêng. Cần ánh xạ lại đường
-dẫn output, schema, số dòng và version model theo hợp đồng trên; không đánh dấu
-publish thành công chỉ vì store đã có manifest. Chưa có adapter tự động trong guide này.
-
-## 7. Retry, lỗi và giới hạn cần xử lý ở DAG
-
-| Tình huống | Cách xử lý |
-|---|---|
-| Scoring lỗi sau ingest | Retry đúng input/ID/cutoff/model; ingest trả snapshot đã commit |
-| Cùng ID nhưng khác nội dung/cutoff | Dừng, kiểm tra upstream; không thay ID để che lỗi dữ liệu |
-| Batch mới có cutoff nhỏ hơn store hiện tại | Bị từ chối; replay batch đã commit hoặc rebuild store riêng theo lịch sử đúng thứ tự |
-| Store bị lock sau crash | Xác minh không còn writer, kiểm tra trạng thái trước khi phục hồi thủ công; không tự xóa lock trong retry |
-| Model-output đã tồn tại | Training không overwrite; kiểm tra lần chạy trước, chọn version mới khi cần chạy lại |
-| Model lưu xong nhưng audit thất bại | Đường dẫn model có thể tồn tại dù task fail; chưa promote, kiểm tra rồi chọn attempt/version mới |
-| Input Parquet rỗng | Bị từ chối trước ingest; DAG cần chính sách ngày không giao dịch, không coi đây là output rỗng được hỗ trợ |
-| Không có khách hoạt động trong cửa sổ nhưng input hợp lệ | Daily ghi partition rỗng đúng schema và không load model; thành công này không chứng minh model tồn tại/hợp lệ |
-| Late arrival của ngày cũ | State được cập nhật ở cutoff hiện tại; muốn xuất khách ngày cũ thì mở rộng period-start hoặc all-customers |
-| Hai task ghi cùng output ngày/model path | Không được chạy đồng thời; store lock không bảo vệ hai loại output này |
-
-Store chống trùng trên toàn bộ dòng nghiệp vụ; một hóa đơn nhiều dòng/batch chỉ
-được tính Frequency một lần cho mỗi khách. Hai giao dịch thực sự khác nhau nhưng
-giống hệt mọi cột có thể bị gộp. Chưa hỗ trợ sửa/xóa/upsert: thay giá/số lượng thành
-dòng khác, không tự thay thế dòng cũ. Cần thiết kế điều chỉnh hoặc rebuild store mới.
-
-Backend hỗ trợ local/HDFS, một writer; không phải giao thức giao dịch cho S3/object
-storage. Snapshot/file tăng dần, chưa có compaction/GC tự động. Global percentile
-vẫn scan/sort state toàn bộ khách; không cam kết chi phí chỉ tỷ lệ với batch mới.
-Monthly chọn cutoff-safe snapshot nhưng không đảm bảo lịch sử đã nạp đủ.
-
-## 8. Kiểm chứng trước khi đưa vào lịch chạy
-
-```powershell
-docker compose run --rm --no-deps airflow-scheduler python -m pytest -q /opt/airflow/tests/test_pyspark_rfm.py
-```
-
-Sau test, chạy A → B trên các đường dẫn thử riêng và kiểm tra:
-
-1. Store có manifest commit; model có pipeline và audit metadata đúng cutoff/version.
-2. Output có `_SUCCESS`, schema đúng và số khách đúng cửa sổ; đọc từ output root để có run_date.
-3. Chạy lại B với cùng cấu hình: R/F/M và Cluster không thay đổi, store không cộng đôi.
-4. Trên fixture riêng, thêm batch có dòng trùng và hóa đơn giao nhau; đối chiếu với
-   full recompute, kiểm tra output ngày khác không bị ghi đè.
-5. Training version mới, thử save/load và xác nhận daily không fit lại model.
-6. Chạy DAG test với ngày dữ liệu tường minh, kiểm tra cả downstream/publish và log retry.
-
-Trạng thái xác minh khi viết guide: AST của backup, daily và training đã qua;
-test CLI trên interpreter host trả `1 skipped` vì thiếu PySpark. Các lần kiểm tra
-trước ghi nhận giới hạn Hadoop/winutils trên Windows. Chưa chạy các lệnh Docker
-trong guide này, chưa xác nhận real-disk end-to-end hoặc DAG tích hợp đã thành công.
-Không dùng kết quả skip làm bằng chứng pass.
+Bằng chứng hiện có: 19 test RFM về CLI/daily và 11 test model/publication đạt trên host; syntax và diff checks đạt. Chưa chạy lại toàn bộ kiểm thử ghi Parquet/lưu model thật trong Docker vì daemon chưa bật. Kết quả này xác nhận phần core đã kiểm tra, chưa thay thế nghiệm thu end-to-end DAG.
