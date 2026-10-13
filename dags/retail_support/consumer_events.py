@@ -65,6 +65,11 @@ def publication_events(triggering_events, assets):
 
 def snapshot_events(triggering_events, asset):
     """Resolve the exact immutable completion, not a mutable date pointer."""
+    return validate_snapshots(publication_events(triggering_events, [asset]))
+
+
+def validate_snapshots(publications):
+    """Validate aggregate metadata received via an Asset or same-run XCom."""
     from retail_contracts import (
         context_file,
         data_root,
@@ -74,7 +79,6 @@ def snapshot_events(triggering_events, asset):
     )
     from retail_support.publication import branch_publication_path
 
-    publications = publication_events(triggering_events, [asset])
     for extra in publications:
         if extra.get("publication_version") != 3:
             raise ValueError("Dashboard requires an aggregate snapshot event")

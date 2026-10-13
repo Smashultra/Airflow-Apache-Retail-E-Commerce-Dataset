@@ -8,6 +8,10 @@ Collector Airflow không quét Parquet hay chạy Spark để tạo lineage.
 JVM khi job chạy, có parent run nối về task Airflow. Xem cấu hình, fixture và
 giới hạn tại [Spark OpenLineage listener](SPARK_OPENLINEAGE_VI.md).
 
+Biến thể [all-in-one](ALLINONE_DAG_VI.md) cũng dùng extractor và listener này.
+Marketing/Dashboard là task trong cùng DAG; lineage vẫn được ghi dù không
+có Asset-aware scheduling hoặc Asset event.
+
 ## Bước 2: bật giao diện Marquez khi cần
 
 Chạy tại thư mục gốc repository trong PowerShell:

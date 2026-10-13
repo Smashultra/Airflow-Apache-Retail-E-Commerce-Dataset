@@ -106,7 +106,8 @@ class BranchSparkSubmitOperator(LineageSparkSubmitOperator):
             super().execute(context)
         summary = branch_publication(root, inputs, self.stage, publish=True)
         extra = branch_event_metadata(root, summary, self.stage)
-        context["outlet_events"][self.asset].extra = extra
+        if self.asset in self.outlets:
+            context["outlet_events"][self.asset].extra = extra
         LOGGER.info(
             "BRANCH_PUBLISHED %s %s",
             self.stage,
@@ -124,7 +125,7 @@ class AuditSparkSubmitOperator(BranchSparkSubmitOperator):
     asset = FLAGGED_ANOMALIES_ASSET
 
 
-def notify_completion():
+def notify_completion(emit_assets=True):
     """Publish only after both branches produced consistent stage manifests."""
     context = get_current_context()
     metadata = context["ti"].xcom_pull(task_ids="validate_raw_data")
@@ -158,9 +159,11 @@ def notify_completion():
             )
         ),
     }
-    for asset in COMPLETION_ASSETS:
-        context["outlet_events"][asset].extra = dict(extra)
+    if emit_assets:
+        for asset in COMPLETION_ASSETS:
+            context["outlet_events"][asset].extra = dict(extra)
     LOGGER.info("PIPELINE_COMPLETE %s", json.dumps(summary, sort_keys=True))
+    return extra
 
 
 def training_dates(context):

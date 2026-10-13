@@ -94,7 +94,15 @@ def completed_lineage(ti):
     """Use the current run's manifests, never the mutable date pointer."""
     if ti.dag_id in CONSUMERS:
         return consumer_lineage(ti.dag_id)
-    if ti.dag_id not in {"ecommerce_etl_dag", "retail_rfm_training_dag"}:
+    if ti.dag_id == "ecommerce_etl_dag_allinone":
+        if ti.task_id == "execute_voucher_campaign":
+            return consumer_lineage("retail_marketing_consumer_dag")
+        if ti.task_id == "generate_executive_summary":
+            return consumer_lineage("retail_executive_dashboard_dag")
+    if ti.dag_id not in {
+        "ecommerce_etl_dag", "ecommerce_etl_dag_allinone",
+        "retail_rfm_training_dag",
+    }:
         return OperatorLineage()
     root = data_root()
     path = context_file(root, json_hash([ti.dag_id, ti.run_id]))
@@ -275,7 +283,9 @@ class RetailExtractor(BaseExtractor):
         # START must not advertise output, including a previous retry's output.
         # Nonempty real inputs prevent provider fallback to declared outlets.
         if (
-            self.operator.dag_id == "ecommerce_etl_dag"
+            self.operator.dag_id in {
+                "ecommerce_etl_dag", "ecommerce_etl_dag_allinone"
+            }
             and self.operator.task_id == "notify_completion"
         ):
             return OperatorLineage(
@@ -286,7 +296,9 @@ class RetailExtractor(BaseExtractor):
                 ]
             )
         if (
-            self.operator.dag_id == "ecommerce_etl_dag"
+            self.operator.dag_id in {
+                "ecommerce_etl_dag", "ecommerce_etl_dag_allinone"
+            }
             and self.operator.task_id
             in {"compute_rfm_metrics", "detect_anomalies"}
         ):
@@ -300,6 +312,12 @@ class RetailExtractor(BaseExtractor):
                     )
                 ]
             )
+        if self.operator.dag_id == "ecommerce_etl_dag_allinone":
+            consumer = {
+                "execute_voucher_campaign": "retail_marketing_consumer_dag",
+                "generate_executive_summary": "retail_executive_dashboard_dag",
+            }.get(self.operator.task_id)
+            return consumer_lineage(consumer)
         return consumer_lineage(self.operator.dag_id)
 
     def extract_on_complete(self, task_instance):

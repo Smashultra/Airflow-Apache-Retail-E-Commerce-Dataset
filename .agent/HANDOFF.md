@@ -1,5 +1,13 @@
 # Current Handoff
 
+## All-in-one daily alternative - 2026-10-13
+
+- Owner Codex, branch main. Added ecommerce_etl_dag_allinone.py with eight tasks: original daily pipeline plus direct Marketing after RFM and Dashboard after notify. Cron/historical dates, pool, model requirement and optional Spark listener retained. No inlets/outlets, Asset scheduling or event emission in the new DAG; existing four DAGs remain available. Monthly model training remains preparation, not moved into daily scoring.
+- Shared branch gate now populates outlet_events only for declared branch outlets. notify_completion accepts emit_assets=False and returns small metadata for XCom while retaining full publication checks. New allinone consumers reject other-run identity; Marketing validates RFM marker without Audit, Dashboard validates the immutable completion from XCom using extracted shared validate_snapshots. OpenLineage recognizes the new daily ID and both inline consumers; it does not schedule Assets.
+- Verification: `docker exec ecommerce-airflow-airflow-scheduler-1 python -m pytest -q -p no:cacheprovider tests/test_allinone_dag.py tests/test_branch_publication.py tests/test_rfm_publication.py tests/test_retail_dag.py tests/test_consumer_events.py tests/test_retail_lineage.py` -> 58 passed in 15.17s. Includes no outlet_events in runtime fixture, early Marketing with missing Audit, blocked aggregate/Dashboard, frozen retry, different-run rejection, Spark failure and unchanged old Asset behavior. New DAG serialization included.
+- docs/ALLINONE_DAG_VI.md records topology, demo limits and run instructions. Output generations use distinct DAG/run keys but date pointer remains shared: choose one daily variant for a demo to avoid duplicate work. No production/full-data run, training, service recreation, commit/push or external campaign dispatch.
+- Ruff on six changed Python files and git diff --check passed. DagBag imported and serialized all five DAGs; an extra diagnostic accessing obsolete timetable.summary failed after successful assertions, corrected to print its class name.
+
 ## Optional Spark OpenLineage listener - 2026-10-13
 
 - Owner Codex, branch main. Added LineageSparkSubmitOperator for ETL/training and as the base of both branch operators; retained publication gates and six-task daily topology. RetailExtractor registers the new operator. Listener attaches at execute time only, defaults off, honors global collection disable. Separate Java file/composite transport; parent/root injected by installed Spark provider. No DAG-parse downloads or Spark imports.

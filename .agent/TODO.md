@@ -2,6 +2,7 @@
 
 | Status | Task | Owner | Branch | Dependency |
 |---|---|---|---|---|
+| DONE | Add ecommerce_etl_dag_allinone using direct task dependencies without Asset scheduling/events | Codex | main | 58 focused tests passed; eight tasks; same-run manifests/XCom; existing DAGs retained; no full-data run |
 | DONE | Add opt-in Spark OpenLineage listener with pinned JAR, Airflow parent and isolated Spark verification | Codex | main | 61 tests passed; real Spark schema/column/Marquez, broken HTTP and Airflow parent verified; default off; no full retail run |
 | DONE | Independent RFM/audit publications and aggregate-only Dashboard Asset | Codex | main | 54 focused tests; four DAGs import/serialize; Ruff passed; docs/Word updated; no production run |
 | DONE | Publish validated RFM Asset from compute task; decouple Marketing and retain matched Executive snapshots | Codex | main | 42 focused tests passed; four DAGs import/serialize; Ruff passed; docs and Word updated; no full-data rerun |
