@@ -2,6 +2,7 @@
 
 | Status | Task | Owner | Branch | Dependency |
 |---|---|---|---|---|
+| DONE | Add explicit branching and conditional consumers to all-in-one DAG | Codex | main | 62 regression tests passed; final 10 all-in-one tests passed including ShortCircuit skip boundary; docs updated; no full-data run |
 | DONE | Add ecommerce_etl_dag_allinone using direct task dependencies without Asset scheduling/events | Codex | main | 58 focused tests passed; eight tasks; same-run manifests/XCom; existing DAGs retained; no full-data run |
 | DONE | Add opt-in Spark OpenLineage listener with pinned JAR, Airflow parent and isolated Spark verification | Codex | main | 61 tests passed; real Spark schema/column/Marquez, broken HTTP and Airflow parent verified; default off; no full retail run |
 | DONE | Independent RFM/audit publications and aggregate-only Dashboard Asset | Codex | main | 54 focused tests; four DAGs import/serialize; Ruff passed; docs/Word updated; no production run |

@@ -11,6 +11,17 @@ from retail_support.publication import rfm_publication, rfm_event_metadata
 LOGGER = logging.getLogger(__name__)
 
 
+def choose_marketing_branch():
+    """Select the enabled consumer or an explicit no-campaign path."""
+    enabled = get_current_context()["params"]["enable_marketing"]
+    return "execute_voucher_campaign" if enabled else "skip_marketing"
+
+
+def dashboard_enabled():
+    """Gate only the optional Dashboard consumer, after publication."""
+    return get_current_context()["params"]["enable_dashboard"]
+
+
 def run_marketing():
     context = get_current_context()
     metadata = context["ti"].xcom_pull(task_ids="validate_raw_data")

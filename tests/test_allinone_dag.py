@@ -8,10 +8,20 @@ from airflow.providers.apache.spark.operators.spark_submit import (
     SparkSubmitOperator,
 )
 from airflow.serialization.serialized_objects import DagSerialization
+from airflow.providers.standard.operators.python import (
+    BranchPythonOperator,
+    PythonOperator,
+    ShortCircuitOperator,
+)
 
 from ecommerce_etl_dag_allinone import dag
 from retail_contracts import atomic_json, context_file, json_hash, stage_file
-from retail_support.allinone import run_dashboard, run_marketing
+from retail_support.allinone import (
+    choose_marketing_branch,
+    dashboard_enabled,
+    run_dashboard,
+    run_marketing,
+)
 from retail_support.lineage import completed_lineage
 from retail_support.tasks import notify_completion
 
@@ -37,28 +47,76 @@ def ready(analytics_ready):
 
 
 def test_topology_without_assets():
-    assert len(dag.tasks) == 8
+    assert len(dag.tasks) == 12
     assert all(not task.inlets and not task.outlets for task in dag.tasks)
     assert dag.get_task("execute_voucher_campaign").upstream_task_ids == {
-        "compute_rfm_metrics"
+        "choose_marketing_branch"
     }
     assert dag.get_task("generate_executive_summary").upstream_task_ids == {
-        "notify_completion"
+        "check_dashboard_enabled"
     }
     assert dag.get_task("notify_completion").upstream_task_ids == {
         "compute_rfm_metrics",
         "detect_anomalies",
     }
     assert {task.task_id for task in dag.leaves} == {
-        "execute_voucher_campaign",
+        "finish_pipeline",
+    }
+    assert all(
+        task.trigger_rule == "all_success"
+        for task in dag.tasks if task.task_id != "finish_pipeline"
+    )
+    assert dag.get_task("finish_pipeline").trigger_rule == (
+        "none_failed_min_one_success"
+    )
+    assert dag.get_task("finish_pipeline").upstream_task_ids == {
+        "notify_completion", "choose_marketing_branch",
+        "execute_voucher_campaign", "skip_marketing",
         "generate_executive_summary",
     }
-    assert all(task.trigger_rule == "all_success" for task in dag.tasks)
+    assert isinstance(dag.get_task("choose_marketing_branch"), BranchPythonOperator)
+    gate = dag.get_task("check_dashboard_enabled")
+    assert isinstance(gate, ShortCircuitOperator)
+    assert gate.ignore_downstream_trigger_rules is False
+    assert gate.downstream_task_ids == {
+        "generate_executive_summary",
+    }
     assert dag.get_task("notify_completion").op_kwargs == {
         "emit_assets": False
     }
     assert dag.get_task("notify_completion").do_xcom_push
     DagSerialization.serialize_dag(dag)
+
+
+@pytest.mark.parametrize("marketing", [True, False])
+@pytest.mark.parametrize("dashboard", [True, False])
+def test_consumer_switches(marketing, dashboard):
+    runtime = {"params": {
+        "enable_marketing": marketing, "enable_dashboard": dashboard,
+    }}
+    with patch("retail_support.allinone.get_current_context", return_value=runtime):
+        assert choose_marketing_branch() == (
+            "execute_voucher_campaign" if marketing else "skip_marketing"
+        )
+        assert dashboard_enabled() is dashboard
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_dashboard_short_circuit_does_not_skip_final_join(enabled):
+    gate = dag.get_task("check_dashboard_enabled")
+    runtime = {"task": gate, "ti": Mock(), "dag_run": Mock()}
+    with (
+        patch.object(PythonOperator, "execute", return_value=enabled),
+        patch.object(ShortCircuitOperator, "skip") as skip,
+    ):
+        assert gate.execute(runtime) is enabled
+        if enabled:
+            skip.assert_not_called()
+        else:
+            skip.assert_called_once()
+            assert {task.task_id for task in skip.call_args.kwargs["tasks"]} == {
+                "generate_executive_summary"
+            }
 
 
 def test_early_marketing_then_aggregate_without_events(ready, caplog):

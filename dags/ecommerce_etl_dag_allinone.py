@@ -4,7 +4,11 @@ from datetime import timedelta
 
 import pendulum
 from airflow.providers.standard.operators.empty import EmptyOperator
-from airflow.providers.standard.operators.python import PythonOperator
+from airflow.providers.standard.operators.python import (
+    BranchPythonOperator,
+    PythonOperator,
+    ShortCircuitOperator,
+)
 from airflow.sdk import (
     DAG,
     CronDataIntervalTimetable,
@@ -14,7 +18,12 @@ from airflow.sdk import (
     SyncCallback,
 )
 
-from retail_support.allinone import run_marketing, run_dashboard
+from retail_support.allinone import (
+    choose_marketing_branch,
+    dashboard_enabled,
+    run_marketing,
+    run_dashboard,
+)
 from retail_support.spark_lineage import LineageSparkSubmitOperator
 from retail_support.tasks import (
     LandingValidationSensor,
@@ -99,6 +108,12 @@ with DAG(
             description="Pin an eligible model, or resolve by cutoff",
         ),
         "churn_days": Param(90, type="integer", minimum=1, maximum=3650),
+        "enable_marketing": Param(
+            True, type="boolean", description="Run the Marketing demo consumer",
+        ),
+        "enable_dashboard": Param(
+            True, type="boolean", description="Run the Dashboard demo consumer",
+        ),
     },
     default_args={
         "owner": "retail-data-team",
@@ -120,7 +135,9 @@ The exclusive analysis cutoff is 2011-12-10. The daily timetable is bounded
 to historical data: use explicit manual runs/backfills, not today's date.
 Marketing follows validated RFM; Dashboard follows aggregate completion.
 All dependencies are task edges; no Asset schedule, inlets or outlets.
-Success requires both consumer tasks as well as the pipeline.
+enable_marketing selects Marketing or skip_marketing via branching.
+enable_dashboard gates Dashboard with a short circuit; both default true.
+Success requires the pipeline and all enabled consumers.
 Outputs are versioned; original CSV and legacy Parquet are preserved.
 """,
 ) as dag:
@@ -182,5 +199,25 @@ Outputs are versioned; original CSV and legacy Parquet are preserved.
         execution_timeout=timedelta(minutes=2),
         do_xcom_push=False,
     )
-    compute_rfm_metrics >> marketing
-    completion >> dashboard
+    choose_marketing = BranchPythonOperator(
+        task_id="choose_marketing_branch",
+        python_callable=choose_marketing_branch,
+        execution_timeout=timedelta(minutes=1),
+    )
+    skip_marketing = EmptyOperator(task_id="skip_marketing")
+    check_dashboard = ShortCircuitOperator(
+        task_id="check_dashboard_enabled",
+        python_callable=dashboard_enabled,
+        # Skip Dashboard only; let the final join evaluate its trigger rule.
+        ignore_downstream_trigger_rules=False,
+        execution_timeout=timedelta(minutes=1),
+    )
+    finish = EmptyOperator(
+        task_id="finish_pipeline",
+        trigger_rule="none_failed_min_one_success",
+    )
+    compute_rfm_metrics >> choose_marketing >> [marketing, skip_marketing]
+    completion >> check_dashboard >> dashboard
+    # Completion stays mandatory even when both consumers are disabled.
+    # Do not connect the short circuit directly to finish: it skips direct children.
+    [completion, choose_marketing, marketing, skip_marketing, dashboard] >> finish

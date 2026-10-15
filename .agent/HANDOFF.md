@@ -1,5 +1,12 @@
 # Current Handoff
 
+## All-in-one branching and conditional consumers - 2026-10-15
+
+- Owner Codex, branch main. User requested branching and conditional tasks in the all-in-one DAG. Added parameter-driven BranchPythonOperator for Marketing versus skip_marketing and ShortCircuitOperator for Dashboard; enable_marketing/enable_dashboard default true. Twelve tasks, no Asset changes, existing daily DAG untouched.
+- finish_pipeline is the sole leaf with none_failed_min_one_success; completion is a direct upstream, so core publication remains mandatory even with both consumers disabled. ShortCircuit skips only its direct Dashboard child, not the final join. Conditions are configuration switches, not data-dependent audience/anomaly rules. Existing consumer demo behavior retained.
+- Verification: `docker exec ecommerce-airflow-airflow-scheduler-1 python -m pytest -q -p no:cacheprovider tests/test_allinone_dag.py tests/test_branch_publication.py tests/test_rfm_publication.py tests/test_retail_dag.py tests/test_consumer_events.py tests/test_retail_lineage.py` -> 62 passed in 18.21s. Added actual ShortCircuit execute/skip-boundary tests afterwards; final `docker exec ecommerce-airflow-airflow-scheduler-1 python -m pytest -q -p no:cacheprovider tests/test_allinone_dag.py` -> 10 passed in 8.19s. Includes DAG serialization and all four switch combinations. `git diff --check` passed (CRLF warnings only). Local Ruff module unavailable; no lint success claimed.
+- Updated docs/ALLINONE_DAG_VI.md topology, trigger rules and manual parameters. No full-data or scheduler DagRun executed, no external messages, commit or push. Optional next step: manually demonstrate switches with an eligible model and historical business_date.
+
 ## All-in-one daily alternative - 2026-10-13
 
 - Owner Codex, branch main. Added ecommerce_etl_dag_allinone.py with eight tasks: original daily pipeline plus direct Marketing after RFM and Dashboard after notify. Cron/historical dates, pool, model requirement and optional Spark listener retained. No inlets/outlets, Asset scheduling or event emission in the new DAG; existing four DAGs remain available. Monthly model training remains preparation, not moved into daily scoring.
