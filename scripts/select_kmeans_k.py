@@ -1,7 +1,7 @@
 """Offline helper: score K-means over a range of k (WSSSE + silhouette)
 to help you pick k for RFM segmentation. Not run by the daily DAG -
-run it once, read k_scores.csv / the charts, then hardcode the chosen
-k as --k when running scripts/pyspark_rfm.py.
+read k_scores.csv / the charts, then supply rfm_k to the training DAG.
+The DAG passes --pipeline-context to reuse its frozen ETL and cutoff.
 
 Usage:
     spark-submit scripts/select_kmeans_k.py \
@@ -15,33 +15,26 @@ import argparse
 import logging
 import os
 
-from pyspark.ml.clustering import KMeans
-from pyspark.ml.evaluation import ClusteringEvaluator
-from pyspark.sql import SparkSession
-
-from pyspark_rfm import (
-    DEFAULT_KMEANS_SEED,
-    compute_rfm,
-    kmeans_feature_pipeline,
-    prepare_kmeans_features,
-    select_history,
-    validate_curated_contract,
-)
-
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 logger = logging.getLogger("select_kmeans_k")
 
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Score K-means over a range of k.")
-    parser.add_argument("--input", required=True, help="Curated Parquet directory.")
-    parser.add_argument("--run-date", required=True, help="Cutoff date, YYYY-MM-DD.")
+    parser.add_argument("--pipeline-context", help="Frozen training context from the DAG.")
+    parser.add_argument("--input", help="Curated Parquet directory.")
+    parser.add_argument("--run-date", help="Cutoff date, YYYY-MM-DD.")
     parser.add_argument("--k-min", type=int, default=2)
     parser.add_argument("--k-max", type=int, default=10)
-    parser.add_argument("--seed", type=int, default=DEFAULT_KMEANS_SEED)
-    parser.add_argument("--output", required=True, help="Where to write results.")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--output", help="Where to write standalone results.")
 
     args = parser.parse_args(argv)
+    if args.pipeline_context:
+        if any((args.input, args.run_date, args.output)):
+            parser.error("--pipeline-context cannot be combined with --input/--run-date/--output")
+    elif not all((args.input, args.run_date, args.output)):
+        parser.error("Provide --pipeline-context or --input, --run-date and --output")
     if args.k_min < 2:
         parser.error("--k-min must be at least 2.")
     if args.k_max < args.k_min:
@@ -54,6 +47,9 @@ def score_k_range(features_df, k_min: int, k_max: int, seed: int):
     features_df must already have a scaled "features" column (fit the
     scaler once, outside this loop, so every k is scored consistently).
     """
+    from pyspark.ml.clustering import KMeans
+    from pyspark.ml.evaluation import ClusteringEvaluator
+
     evaluator = ClusteringEvaluator(
         predictionCol="Cluster", featuresCol="features", metricName="silhouette"
     )
@@ -103,11 +99,40 @@ def write_report(results, output_root: str) -> None:
         logger.info("Wrote %s", path)
 
 
+def resolve_inputs(args):
+    """Bind the report to exactly the ETL generation used by training."""
+    if not args.pipeline_context:
+        return None
+    from retail_contracts import data_root, json_hash, load_context, safe_path
+    from retail_models import read_training_etl
+
+    root = data_root().resolve()
+    context = load_context(args.pipeline_context, root)
+    if context.get("kind") != "training":
+        raise ValueError("Expected a training context")
+    etl, source = read_training_etl(root, context["etl_manifest"])
+    if json_hash(etl) != context["etl_hash"] or source["run_date"] != context["run_date"]:
+        raise ValueError("Training ETL generation or cutoff changed")
+    args.input = str(safe_path(root, etl["outputs"]["transactions"]))
+    args.run_date = context["run_date"]
+    args.seed = context["seed"]
+    args.output = str(safe_path(root, f"analytics/k_selection/{context['run_key']}"))
+    return context
+
+
 def main():
+    from pyspark.sql import SparkSession
+    from pyspark_rfm import (
+        compute_rfm, kmeans_feature_pipeline, prepare_kmeans_features,
+        select_history, validate_curated_contract,
+    )
+
     args = parse_args()
+    context = resolve_inputs(args)
     spark = None
     try:
-        spark = SparkSession.builder.appName("SelectKMeansK").getOrCreate()
+        spark = (SparkSession.builder.appName("SelectKMeansK")
+                 .config("spark.sql.session.timeZone", "UTC").getOrCreate())
 
         transactions = spark.read.parquet(args.input)
         validate_curated_contract(transactions)
@@ -125,6 +150,21 @@ def main():
 
         results = score_k_range(features_df, args.k_min, k_max, args.seed)
         write_report(results, args.output)
+        if context:
+            from pathlib import Path
+            from retail_contracts import atomic_json
+
+            atomic_json(Path(args.output) / "report.json", {
+                "training_cutoff": args.run_date,
+                "etl_manifest": context["etl_manifest"],
+                "etl_hash": context["etl_hash"],
+                "seed": args.seed,
+                "rfm_k": context["rfm_k"],
+                "customers": customer_count,
+                "scores": [dict(k=k, wssse=w, silhouette=s) for k, w, s in results],
+            })
+        logger.info("Report: %s; cutoff=%s; ETL=%s. Choose rfm_k manually; no automatic selection.",
+                    args.output, args.run_date, context["etl_manifest"] if context else args.input)
         features_df.unpersist()
 
     except Exception:

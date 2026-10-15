@@ -1,5 +1,46 @@
 # Current Handoff
 
+## UI sensor deadlock demo - 2026-10-15
+
+- Added isolated retail_sensor_deadlock_demo.py defining three manual-only single-task DAGs (poke/reschedule/producer), dedicated retail_sensor_demo pool expected to have 1 slot. No business DAG modifications. Sensor waits for per-key hashed file under data/demos/sensor_deadlock; producer creates it. Poke timeout 180 seconds/retries zero bounds resource hold, reschedule interval 15 seconds. UI instructions require sensor running before triggering producer and fresh keys across trials.
+- docs/DEMO_SENSOR_DEADLOCK_VI.md covers pool creation, expected resource cycle, timeout recovery, reschedule comparison and existing daily reschedule configuration. Pool not created and no real runs triggered; user performs demo in UI.
+- Verification: `docker compose exec -T airflow-scheduler python -m pytest -q -p no:cacheprovider tests/test_sensor_deadlock_demo.py` -> 2 passed in 5.05s (signal isolation, pool/mode/timeout, serialization). No live scheduler deadlock claimed.
+
+## UI idempotency demo - 2026-10-15
+
+- Added BRANCH_REUSED log after successful validation of an existing branch publication. Existing skip-Spark behavior unchanged; no new Param/task. docs/DEMO_IDEMPOTENCY_VI.md demonstrates clearing only successful detect_anomalies in the same all-in-one run, comparing audit_hash/etl_hash/manifest in UI logs. Can follow atomicity recovery directly.
+- Scope: published branch snapshot reuse, not whole-DAG or exactly-once Asset effects. Do not clear ETL/upstream or create a new run for this comparison. No real UI demo triggered or data changed.
+- Verification: `docker compose exec -T airflow-scheduler python -m pytest -q -p no:cacheprovider tests/test_branch_publication.py` -> 20 passed in 10.69s (Spark mocked); scoped git diff --check passed. Existing user changes preserved.
+
+## UI atomicity demo - 2026-10-15
+
+- Added default-off demo_fail_audit_once Param to both daily DAGs. Shared branch operator injects AirflowFailException after successful Spark and before audit publication only for opted-in manual runs. Run-local demo_audit_failure.json makes failure one-shot; UI Clear audit + downstream recovers without changing Params/code. Published branches bypass injection. No model/data edits or real demo DagRun triggered.
+- docs/DEMO_ATOMICITY_VI.md explains all-in-one UI failure/recovery and optional Asset variant. Scope is publication atomicity, not partial Parquet rollback. Failed attempt may leave unadvertised artifacts; clear reruns Spark. Scheduled/backfill unaffected. Existing user edits to prepare_daily_landing.py preserved.
+- Verification: `docker compose exec -T airflow-scheduler python -m pytest -q -p no:cacheprovider tests/test_branch_publication.py tests/test_allinone_dag.py tests/test_historical_boundaries.py tests/test_retail_dag.py` -> 45 passed in 14.15s. Spark submit mocked in publication fixture tests; checks no publication/event/completion and old pointer retained, recovery, published retry reuse, default/scheduled bypass. Historical final-day/serialization tests now pass too, completing the prior interrupted date-fix verification. Full-data UI demo not executed.
+
+## Restore bounded training schedule - 2026-10-15
+
+- User explicitly chose historical logical dates over opening the schedule to 2026. Restored training end_date=2011-11-01 UTC, superseding the removal below. Manual business cutoff remains independent. DAG doc_md, SETUP, K selection and architecture guide now explain historical logical dates and avoiding duplicate logical dates between report/train runs.
+- Regression checks all five task end_dates and eligible 2011/ineligible 2026 dates. `docker compose exec -T airflow-scheduler python -m pytest -q -p no:cacheprovider tests/test_retail_dag.py tests/test_k_selection_context.py` -> 13 passed in 7.71s. git diff --check passed. No service restart, new runs, data changes or commit. Existing empty runs unchanged; user should trigger a new run with an unused historical logical date after reparse.
+
+## Training manual run end_date fix - 2026-10-15
+
+- Inspected installed airflow.models.dagrun.DagRun.verify_integrity: non-backfill runs with logical_date after task.end_date are filtered from TI creation. Removed training DAG end_date (2011-11-01), retaining monthly cron and historical cutoff validation. Existing user/uncommitted K integration preserved. No DB edits, run creation, service restart or model training.
+- Added regression asserting all five training tasks have no end_date and accept a 2026 logical date. `docker compose exec -T airflow-scheduler python -m pytest -q -p no:cacheprovider tests/test_retail_dag.py tests/test_k_selection_context.py` -> 13 passed in 7.40s; git diff --check passed. Docs updated for five tasks and unbounded monthly scheduling.
+- User should allow DAG reparse then trigger NEW report-only run with historical training_cutoff/ETL manifest. Empty success runs are unchanged. Monthly schedule can now create current-period runs while unpaused; pause after demo. Daily/all-in-one historical end_date remains and can similarly filter explicit current logical dates; use historical logical dates there or address separately. No end-to-end Spark report success claimed.
+
+## Current DAG architecture guide - 2026-10-15
+
+- Added docs/KIEN_TRUC_DAG_VI.md at user request: five DAGs including the new K report, infrastructure/Connections/pool, task/Param/timeouts, historical dates, model lifecycle, Asset versus all-in-one, helper file map, manifest/XCom, lineage, operating sequence and limits. Existing runtime changes retained, no new runtime edits in this task.
+- Verification: source review of DAGs, Compose, Dockerfile, requirements and support/runtime modules; Python AST counted 6/5/1/1/12 tasks matching the document; all local Markdown targets exist; git diff --check passed. Documentation only, no services or pipeline runs. Prior K runtime verification limitation remains explicit. SETUP still has a legacy reference to three training tasks; the new guide reflects five.
+
+## Manual K report in training DAG - 2026-10-15
+
+- Owner Codex, branch main. Added evaluate_k Spark task and report_only ShortCircuit gate; normal runs report then train with unchanged manually supplied rfm_k (default 2). Report-only skips train and publish. k_max defaults 8. Daily scoring unchanged.
+- select_kmeans_k supports --pipeline-context, validates frozen ETL hash/cutoff, reads exact transaction output and uses context seed. Saves CSV/optional PNG and report.json provenance under analytics/k_selection/<run_key>. Existing standalone CLI retained. Human reviews report then creates a new run with same etl_manifest/cutoff and chosen rfm_k. docs/K_SELECTION_VI.md and DAG doc_md explain workflow.
+- Verification: `python -m unittest discover -s tests -p test_k_selection_context.py -v` -> 2 passed (binding, changed hash/cutoff, wrong kind, CLI ambiguity); AST parse of four changed Python files and `git diff --check` passed. Updated test_retail_dag topology/gate assertions but could not run Airflow/PySpark: host lacks dependencies and Docker daemon unavailable even outside sandbox. No full-data run, service changes, commit or push.
+- Risk/next action: report adds Spark runtime and blocks training on report failure; run `python -m pytest -q -p no:cacheprovider tests/test_retail_dag.py tests/test_k_selection_context.py tests/test_retail_training.py` in project Docker when available, then report-only fixture/demo. Existing unrelated handbook plan untouched.
+
 ## All-in-one branching and conditional consumers - 2026-10-15
 
 - Owner Codex, branch main. User requested branching and conditional tasks in the all-in-one DAG. Added parameter-driven BranchPythonOperator for Marketing versus skip_marketing and ShortCircuitOperator for Dashboard; enable_marketing/enable_dashboard default true. Twelve tasks, no Asset changes, existing daily DAG untouched.

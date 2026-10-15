@@ -89,7 +89,7 @@ In the UI, trigger `retail_rfm_training_dag` with:
 | etl_manifest | `null` (resolve the committed ETL index above) |
 | rfm_k | `2` (demo configuration; validate k on this training snapshot) |
 
-Wait for all three tasks to succeed. `publish_model` logs `MODEL_ACTIVATED`;
+Wait for all five tasks to succeed in training mode. `publish_model` logs `MODEL_ACTIVATED`;
 `data/manifests/models/registry.json` lists activations and model versions.
 The full PipelineModel is under `data/models/rfm/version=<id>/pipeline/`.
 Training uses only transactions before its cutoff. Model effectiveness dates
@@ -144,7 +144,20 @@ end. If that snapshot is not committed yet, training fails clearly: rerun after
 ETL finishes. Daily continues on its previously activated eligible model.
 Training does not wait for daily scoring/completion and does not trigger daily.
 Both DAGs use the same one-slot `retail_spark` pool. Keep historical DAGs paused
-outside explicit demos/backfills; the last monthly interval ends 2011-12-01.
+outside explicit demos/backfills; training end_date is the END of 2011-11-01 UTC
+(23:59:59.999999). Both daily DAGs include the whole final day 2011-12-09 UTC.
+This accepts manual UI dates with a non-midnight time on that last day without
+adding another scheduled day/month. Convert UI timezone to UTC when selecting dates.
+When manually triggering, explicitly set a historical logical date within the
+DAG's start/end bounds, not today's date. Example: training logical date
+2011-11-01T00:00:00Z with training_cutoff=2011-12-01. The report-only run can
+use 2011-10-31T00:00:00Z with the SAME cutoff and ETL manifest. Choose unused
+historical logical dates if these already belong to existing runs; changing
+run_id alone may not avoid a logical-date conflict. The manual cutoff comes
+from Params, independently of logical date. For daily, use logical date
+2011-12-09T00:00:00Z and business_date=2011-12-09. Explicit logical dates after
+task end_date can yield runs without task instances; create a new correctly
+dated run rather than reusing the empty run.
 
 Daily freezes model URI/hash/activation in its context. Retry or clear cannot
 silently switch models, even after a newer activation. Changing model/source/k

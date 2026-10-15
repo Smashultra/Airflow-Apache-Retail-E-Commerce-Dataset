@@ -33,11 +33,11 @@ def prepare(source, root, version="online-retail-v1", encoding="cp1252"):
         ):
             raise ValueError("Source changed: choose a new source version")
         return destination / "manifest.json"
-    if destination.exists():
+    if destination.exists(): 
         raise ValueError(
-            "Uncommitted destination exists; inspect before retry"
+            "Uncommitted destination exists; inspect before retry" 
         )
-    groups = defaultdict(list)
+    groups = defaultdict(list) 
     with source.open(encoding=encoding, newline="") as stream:
         reader = csv.reader(stream, strict=True)
         if next(reader, None) != COLUMNS:

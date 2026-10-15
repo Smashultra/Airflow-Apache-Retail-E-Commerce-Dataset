@@ -2,6 +2,14 @@
 
 | Status | Task | Owner | Branch | Dependency |
 |---|---|---|---|---|
+| DONE | Isolated UI sensor pool deadlock demonstration | Codex | main | 2 tests passed; UI pool setup documented; live demo not triggered |
+| DONE | Minimal UI idempotency demo with published branch reuse log | Codex | main | 20 publication tests passed; docs/DEMO_IDEMPOTENCY_VI.md; no real UI run |
+| DONE | Add opt-in one-shot audit pre-publication failure for UI atomicity demo | Codex | main | 45 Docker tests passed; docs/DEMO_ATOMICITY_VI.md; no full-data demo run |
+| DONE | Include full final UTC day for historical manual runs across three cron DAGs | Codex | main | Boundary/serialization tests included in 45 passing tests; current 2026 logical dates still excluded |
+| DONE | Restore historical training end_date and document explicit historical manual logical dates | Codex | main | Supersedes unbounded scheduling fix; 13 focused Docker tests passed; historical dates documented |
+| DONE | Remove training end_date blocking current manual logical dates | Codex | main | Installed date filter verified; 13 focused Docker tests passed; schedule now unbounded, pause after demo |
+| DONE | Document current five-DAG architecture, configuration and supporting files in Vietnamese | Codex | main | docs/KIEN_TRUC_DAG_VI.md; source review, AST task counts, local links and diff checks passed |
+| DONE | Add manual K report to monthly training DAG using frozen ETL context | Codex | main | 2 context tests and syntax/diff checks passed; Docker unavailable, Airflow/Spark runtime checks pending |
 | DONE | Add explicit branching and conditional consumers to all-in-one DAG | Codex | main | 62 regression tests passed; final 10 all-in-one tests passed including ShortCircuit skip boundary; docs updated; no full-data run |
 | DONE | Add ecommerce_etl_dag_allinone using direct task dependencies without Asset scheduling/events | Codex | main | 58 focused tests passed; eight tasks; same-run manifests/XCom; existing DAGs retained; no full-data run |
 | DONE | Add opt-in Spark OpenLineage listener with pinned JAR, Airflow parent and isolated Spark verification | Codex | main | 61 tests passed; real Spark schema/column/Marquez, broken HTTP and Airflow parent verified; default off; no full retail run |

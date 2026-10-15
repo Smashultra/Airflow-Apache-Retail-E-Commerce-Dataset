@@ -22,9 +22,55 @@ from retail_support.publication import (
     branch_publication_path,
 )
 from retail_support.tasks import notify_completion
+from airflow.sdk.exceptions import AirflowFailException
 
 TASKS = {"rfm": "compute_rfm_metrics", "audit": "detect_anomalies"}
 ASSETS = {"rfm": RFM_CUSTOMERS_ASSET, "audit": FLAGGED_ANOMALIES_ASSET}
+
+
+def test_demo_failure_blocks_publication_then_clear_recovers(analytics_ready):
+    root, inputs, _ = analytics_ready
+    ctx = runtime(analytics_ready)
+    ctx.update(params={"demo_fail_audit_once": True},
+               dag_run=SimpleNamespace(run_type="manual"))
+    # Preserve the last advertised date pointer while the new run is incomplete.
+    pointer = root / "manifests/published" / (inputs["run_date"] + ".json")
+    atomic_json(pointer, {"previous_snapshot": True})
+    before = pointer.read_bytes()
+    with patch.object(SparkSubmitOperator, "execute") as spark:
+        dag.get_task(TASKS["rfm"]).execute(ctx)  # Demo flag does not affect RFM.
+        with pytest.raises(AirflowFailException, match="ATOMICITY_DEMO"):
+            dag.get_task(TASKS["audit"]).execute(ctx)
+        assert spark.call_count == 2  # Failure is after Spark, not before it.
+        assert not branch_publication_path(root, inputs, "audit").exists()
+        assert not ctx["outlet_events"][FLAGGED_ANOMALIES_ASSET].extra
+        assert context_file(root, inputs["run_key"]).with_name("demo_audit_failure.json").exists()
+        with patch("retail_support.tasks.get_current_context", return_value=ctx):
+            with pytest.raises(ValueError, match="has not been published"):
+                notify_completion()
+            assert not ctx["outlet_events"][RETAIL_SNAPSHOT_ASSET].extra
+            assert not context_file(root, inputs["run_key"]).with_name("completion.json").exists()
+            assert pointer.read_bytes() == before
+            # UI Clear: same run/Params, one-shot marker survives.
+            dag.get_task(TASKS["audit"]).execute(ctx)
+            assert spark.call_count == 3
+            notify_completion()
+            assert ctx["outlet_events"][RETAIL_SNAPSHOT_ASSET].extra
+            assert branch_publication_path(root, inputs, "audit").exists()
+            dag.get_task(TASKS["audit"]).execute(ctx)
+            assert spark.call_count == 3  # Published branch is reused.
+
+
+@pytest.mark.parametrize("run_type,enabled", [("manual", False), ("scheduled", True)])
+def test_demo_inactive_outside_opt_in_manual_run(analytics_ready, run_type, enabled):
+    root, inputs, _ = analytics_ready
+    ctx = runtime(analytics_ready)
+    ctx.update(params={"demo_fail_audit_once": enabled},
+               dag_run=SimpleNamespace(run_type=run_type))
+    with patch.object(SparkSubmitOperator, "execute"):
+        dag.get_task(TASKS["audit"]).execute(ctx)
+    assert branch_publication_path(root, inputs, "audit").exists()
+    assert not context_file(root, inputs["run_key"]).with_name("demo_audit_failure.json").exists()
 
 
 def test_failed_final_publication_emits_no_snapshot(analytics_ready):

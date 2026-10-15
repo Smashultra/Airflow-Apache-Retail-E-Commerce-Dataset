@@ -192,11 +192,28 @@ def test_sensor_ready_validates_and_invalid_source_fails_without_retry():
 
 
 def test_training_topology_pool_and_monthly_dates():
-    assert len(training_dag.tasks) == 3
+    # DagRun.verify_integrity filters tasks by logical_date versus task end_date.
+    # Keep scheduling bounded; explicit manual logical dates must be historical.
+    manual_date = pendulum.datetime(2011, 11, 1, tz="UTC")
+    assert training_dag.end_date == manual_date.end_of("day")
+    for task in training_dag.tasks:
+        assert task.end_date == manual_date.end_of("day")
+        assert task.start_date is None or task.start_date <= manual_date
+        assert manual_date <= task.end_date
+        assert pendulum.datetime(2026, 10, 15, tz="UTC") > task.end_date
+    assert len(training_dag.tasks) == 5
     train = training_dag.get_task("train_rfm_model")
     assert isinstance(train, SparkSubmitOperator)
     assert train.pool == dag.get_task("compute_rfm_metrics").pool
-    assert train.upstream_task_ids == {"validate_training_input"}
+    assert train.upstream_task_ids == {"continue_training"}
+    report = training_dag.get_task("evaluate_k")
+    assert report.upstream_task_ids == {"validate_training_input"}
+    assert report.pool == train.pool
+    gate = training_dag.get_task("continue_training")
+    assert gate.upstream_task_ids == {"evaluate_k"}
+    assert gate.ignore_downstream_trigger_rules is True
+    assert gate.python_callable({"report_only": True}) is False
+    assert gate.python_callable({"report_only": False}) is True
     assert train.downstream_task_ids == {"publish_model"}
     assert training_dag.get_task("publish_model").trigger_rule == "all_success"
     ctx = context("scheduled", None)

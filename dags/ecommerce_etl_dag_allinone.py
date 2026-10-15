@@ -71,7 +71,8 @@ with DAG(
     description="Retail ETL, RFM, audit, Marketing and Dashboard in one DAG",
     schedule=CronDataIntervalTimetable("0 0 * * *", timezone="UTC"),
     start_date=pendulum.datetime(2010, 12, 1, tz="UTC"),
-    end_date=pendulum.datetime(2011, 12, 9, tz="UTC"),
+    # Include manual logical times throughout the final historical day.
+    end_date=pendulum.datetime(2011, 12, 9, tz="UTC").end_of("day"),
     catchup=False,
     is_paused_upon_creation=True,
     max_active_runs=1,
@@ -108,6 +109,10 @@ with DAG(
             description="Pin an eligible model, or resolve by cutoff",
         ),
         "churn_days": Param(90, type="integer", minimum=1, maximum=3650),
+        "demo_fail_audit_once": Param(
+            False, type="boolean",
+            description="Manual demo: fail audit once after Spark, before publication. Clear audit + downstream to recover.",
+        ),
         "enable_marketing": Param(
             True, type="boolean", description="Run the Marketing demo consumer",
         ),

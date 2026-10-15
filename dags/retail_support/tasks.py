@@ -9,6 +9,7 @@ from airflow.sdk import get_current_context
 from airflow.sdk.exceptions import AirflowFailException
 
 from retail_contracts import (
+    atomic_json,
     build_context,
     context_file,
     data_root,
@@ -102,9 +103,36 @@ class BranchSparkSubmitOperator(LineageSparkSubmitOperator):
             context["run_id"],
         ):
             raise ValueError("Branch context does not match task run")
-        if not branch_publication_path(root, inputs, self.stage).exists():
+        reuse_publication = branch_publication_path(root, inputs, self.stage).exists()
+        if not reuse_publication:
             super().execute(context)
+            run_type = getattr(context.get("dag_run"), "run_type", None)
+            run_type = getattr(run_type, "value", run_type)
+            if (
+                self.stage == "audit"
+                and context.get("params", {}).get("demo_fail_audit_once", False)
+                and run_type == "manual"
+            ):
+                marker = context_file(root, inputs["run_key"]).with_name(
+                    "demo_audit_failure.json"
+                )
+                if not marker.exists():
+                    atomic_json(marker, {"run_id": inputs["run_id"],
+                                         "point": "after_spark_before_publication"})
+                    # No automatic retry: keep failure visible until the UI Clear.
+                    raise AirflowFailException(
+                        "ATOMICITY_DEMO: Spark finished, but audit publication "
+                        "was deliberately blocked. No audit Asset emitted. "
+                        "Clear detect_anomalies and downstream tasks in this "
+                        "run (not ETL/RFM) to recover. Marker: " + str(marker)
+                    )
         summary = branch_publication(root, inputs, self.stage, publish=True)
+        if reuse_publication:
+            LOGGER.info(
+                "BRANCH_REUSED stage=%s run_key=%s; validated existing publication; "
+                "Spark submission skipped; output generation unchanged",
+                self.stage, inputs["run_key"],
+            )
         extra = branch_event_metadata(root, summary, self.stage)
         if self.asset in self.outlets:
             context["outlet_events"][self.asset].extra = extra
