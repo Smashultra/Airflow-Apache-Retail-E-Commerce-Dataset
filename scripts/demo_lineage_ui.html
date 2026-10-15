@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <title>OpenLineage & Marquez Demo Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/vis-network@9.1.9/dist/vis-network.min.js"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+        body { background: #0f172a; color: #f8fafc; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+        header { background: #1e293b; padding: 14px 24px; border-bottom: 1px solid #334155; display: flex; justify-content: space-between; align-items: center; }
+        .logo { display: flex; align-items: center; gap: 12px; font-size: 1.25rem; font-weight: 700; color: #38bdf8; }
+        .tag { background: #0284c7; color: white; padding: 4px 8px; border-radius: 6px; font-size: 0.75rem; text-transform: uppercase; font-weight: 600; }
+        .controls { display: flex; gap: 10px; }
+        button { background: #2563eb; color: white; border: none; padding: 8px 16px; border-radius: 6px; font-weight: 600; cursor: pointer; transition: 0.2s; }
+        button:hover { background: #1d4ed8; }
+        button.danger { background: #dc2626; }
+        button.danger:hover { background: #b91c1c; }
+        
+        .main-container { display: flex; flex: 1; height: calc(100vh - 65px); }
+        #network-pane { flex: 2; position: relative; border-right: 1px solid #334155; background: #090d16; }
+        #network { width: 100%; height: 100%; }
+        
+        #detail-pane { flex: 1.2; background: #1e293b; display: flex; flex-direction: column; overflow: hidden; }
+        .tabs { display: flex; border-bottom: 1px solid #334155; background: #0f172a; }
+        .tab-btn { flex: 1; padding: 12px; background: none; border: none; color: #94a3b8; font-weight: 600; cursor: pointer; border-bottom: 2px solid transparent; }
+        .tab-btn.active { color: #38bdf8; border-color: #38bdf8; background: #1e293b; }
+        .tab-content { flex: 1; padding: 20px; overflow-y: auto; }
+        
+        .node-card { background: #0f172a; border-radius: 8px; padding: 16px; margin-bottom: 16px; border: 1px solid #334155; }
+        .badge { display: inline-block; padding: 3px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 700; margin-bottom: 8px; }
+        .badge-job { background: #3b82f6; color: white; }
+        .badge-dataset { background: #10b981; color: white; }
+        .badge-staged { background: #f59e0b; color: white; }
+        
+        h3 { font-size: 1.1rem; color: #f1f5f9; margin-bottom: 8px; }
+        p { font-size: 0.88rem; color: #94a3b8; line-height: 1.4; margin-bottom: 8px; }
+        pre { background: #030712; padding: 12px; border-radius: 6px; font-family: monospace; font-size: 0.8rem; color: #a5f3fc; overflow-x: auto; border: 1px solid #1e293b; }
+        
+        .legend { position: absolute; bottom: 16px; left: 16px; background: rgba(30, 41, 59, 0.9); padding: 12px 16px; border-radius: 8px; border: 1px solid #475569; font-size: 0.8rem; backdrop-filter: blur(4px); }
+        .legend-item { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+        .legend-color { width: 14px; height: 14px; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="logo">
+            <span>✨ OpenLineage & Marquez Local Explorer</span>
+            <span class="tag">Namespace: retail-local</span>
+        </div>
+        <div class="controls">
+            <button onclick="triggerRun('success')"> Chạy Pipeline Thành Công</button>
+            <button class="danger" onclick="triggerRun('fail')">⚡ Test Thất Bại (Suppress Output)</button>
+        </div>
+    </header>
+
+    <div class="main-container">
+        <div id="network-pane">
+            <div id="network"></div>
+            <div class="legend">
+                <div class="legend-item"><div class="legend-color" style="background: #3b82f6;"></div> Airflow / Spark Task (Job)</div>
+                <div class="legend-item"><div class="legend-color" style="background: #10b981;"></div> Published Dataset (Đã công bố)</div>
+                <div class="legend-item"><div class="legend-color" style="background: #f59e0b;"></div> Staged Dataset (Chưa duyệt)</div>
+                <div class="legend-item"><div class="legend-color" style="background: #a855f7;"></div> Raw Source Data (Gốc)</div>
+            </div>
+        </div>
+
+        <div id="detail-pane">
+            <div class="tabs">
+                <button class="tab-btn active" onclick="switchTab('node-info', this)">Thông Tin Node</button>
+                <button class="tab-btn" onclick="switchTab('facets', this)">Custom Facets</button>
+                <button class="tab-btn" onclick="switchTab('events', this)">Sự Kiện JSON Thô</button>
+            </div>
+
+            <div id="tab-node-info" class="tab-content">
+                <div class="node-card">
+                    <span class="badge badge-job">HƯỚNG DẪN</span>
+                    <h3>Đồ thị Data Lineage</h3>
+                    <p>Click vào bất kỳ Node nào trên đồ thị bên trái để xem metadata chi tiết, input/output datasets và cấu hình OpenLineage.</p>
+                </div>
+                <div id="selection-details"></div>
+            </div>
+
+            <div id="tab-facets" class="tab-content" style="display: none;">
+                <div class="node-card">
+                    <h3>Custom Facet: retail_provenance</h3>
+                    <p>Facet độc quyền của Retail E-Commerce định nghĩa trong schema <code>retail-lineage-v1.json</code>:</p>
+                    <pre id="facet-code">// Hãy click một Node Job để xem facet</pre>
+                </div>
+            </div>
+
+            <div id="tab-events" class="tab-content" style="display: none;">
+                <div class="node-card">
+                    <h3>OpenLineage RunEvents v2</h3>
+                    <p>Danh sách các sự kiện START và COMPLETE định dạng chuẩn OpenLineage:</p>
+                    <pre id="raw-events">// Đang tải sự kiện...</pre>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let network = null;
+        let pipelineData = null;
+
+        function switchTab(tabId, el) {
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(c => c.style.display = 'none');
+            document.getElementById('tab-' + tabId).style.display = 'block';
+            if (el) el.classList.add('active');
+        }
+
+        async function loadData() {
+            try {
+                const res = await fetch('/api/lineage');
+                pipelineData = await res.json();
+                renderGraph(pipelineData);
+                document.getElementById('raw-events').textContent = JSON.stringify(pipelineData.events.slice(0, 4), null, 2);
+                showNodeDetail('notify_completion');
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        function renderGraph(data) {
+            const nodes = new vis.DataSet(data.nodes);
+            const edges = new vis.DataSet(data.edges);
+
+            const container = document.getElementById('network');
+            const graphData = { nodes: nodes, edges: edges };
+            const options = {
+                layout: {
+                    hierarchical: {
+                        direction: 'LR',
+                        sortMethod: 'directed',
+                        levelSeparation: 220,
+                        nodeSpacing: 100
+                    }
+                },
+                nodes: {
+                    shape: 'box',
+                    margin: 12,
+                    font: { color: '#ffffff', size: 13, face: 'monospace' },
+                    borderWidth: 2,
+                    shadow: true
+                },
+                edges: {
+                    arrows: { to: { enabled: true, scaleFactor: 0.8 } },
+                    color: { color: '#64748b', highlight: '#38bdf8' },
+                    smooth: { type: 'cubicBezier', forceDirection: 'horizontal' }
+                },
+                physics: false
+            };
+
+            network = new vis.Network(container, graphData, options);
+
+            network.on('click', function(params) {
+                if (params.nodes.length > 0) {
+                    const nodeId = params.nodes[0];
+                    showNodeDetail(nodeId);
+                }
+            });
+        }
+
+        function showNodeDetail(nodeId) {
+            const node = pipelineData.nodes.find(n => n.id === nodeId);
+            if (!node) return;
+
+            let html = '';
+            if (node.group === 'job') {
+                html = `
+                    <div class="node-card">
+                        <span class="badge badge-job">AIRFLOW JOB</span>
+                        <h3>${node.label}</h3>
+                        <p><strong>Job Type:</strong> ${node.job_type || 'Python/Spark'}</p>
+                        <p><strong>Run ID:</strong> <code>${node.run_id}</code></p>
+                        <p><strong>State:</strong> <span style="color: #4ade80; font-weight: bold;">${node.state}</span></p>
+                    </div>
+                    <div class="node-card">
+                        <h3>Input Datasets (${node.inputs.length})</h3>
+                        ${node.inputs.map(i => `<p>📥 <code>${i}</code></p>`).join('') || '<p><em>Không có input</em></p>'}
+                    </div>
+                    <div class="node-card">
+                        <h3>Output Datasets (${node.outputs.length})</h3>
+                        ${node.outputs.map(o => `<p>📤 <code>${o}</code></p>`).join('') || '<p><em>Không có output</em></p>'}
+                    </div>
+                `;
+                document.getElementById('facet-code').textContent = JSON.stringify(node.facets || {}, null, 2);
+            } else {
+                html = `
+                    <div class="node-card">
+                        <span class="badge ${node.group === 'staged' ? 'badge-staged' : 'badge-dataset'}">DATASET</span>
+                        <h3>${node.label}</h3>
+                        <p><strong>Namespace:</strong> <code>retail-local</code></p>
+                        <p><strong>Tên logic:</strong> <code>${node.id}</code></p>
+                        <p><strong>Phân loại:</strong> ${node.group === 'staged' ? '⚠️ Dữ liệu tạm thời (Staged - chưa công bố)' : '✅ Dữ liệu hoàn chỉnh (Published)'}</p>
+                    </div>
+                    <div class="node-card">
+                        <h3>Dataset Facets</h3>
+                        <pre>${JSON.stringify(node.facets || { "retail_snapshot": { "physical_path": node.id + ".parquet" } }, null, 2)}</pre>
+                    </div>
+                `;
+            }
+            document.getElementById('selection-details').innerHTML = html;
+        }
+
+        async function triggerRun(mode) {
+            const btn = event.target;
+            btn.disabled = true;
+            btn.textContent = '⏳ Đang chạy pipeline...';
+            try {
+                const res = await fetch('/api/run?mode=' + mode);
+                const data = await res.json();
+                pipelineData = data;
+                renderGraph(data);
+                document.getElementById('raw-events').textContent = JSON.stringify(data.events.slice(0, 4), null, 2);
+                alert(mode === 'success' ? ' Chạy Pipeline thành công! Toàn bộ OpenLineage events đã được cập nhật.' : '⚠️ Đã mô phỏng Task thất bại! Kiểm tra Task `compute_rfm_metrics`: Outputs bị thu hồi hoàn toàn.');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = (mode === 'success' ? ' Chạy Pipeline Thành Công' : '⚡ Test Thất Bại (Suppress Output)');
+            }
+        }
+
+        window.onload = loadData;
+    </script>
+</body>
+</html>
