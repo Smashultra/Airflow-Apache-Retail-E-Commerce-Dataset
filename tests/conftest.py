@@ -1,9 +1,14 @@
 """Make the same mounted modules importable in host and Docker tests."""
 
 import sys
+import shutil
 from pathlib import Path
 
 import pytest
+
+import os
+os.environ["PYSPARK_PYTHON"] = sys.executable
+os.environ["PYSPARK_DRIVER_PYTHON"] = sys.executable
 
 ROOT = Path(__file__).resolve().parents[1]
 for folder in (ROOT, ROOT / "scripts", ROOT / "dags"):
@@ -123,3 +128,42 @@ def analytics_ready(rfm_ready):
     }
     atomic_json(stage_file(root, context, "audit"), stages["audit"])
     return root, context, stages
+
+@pytest.fixture(scope="session")
+def spark():
+    """Shared local Spark session for PySpark tests."""
+    from pyspark.sql import SparkSession
+
+    # 1) Dùng jar Spark đi kèm pip, bỏ qua bản Spark cài riêng.
+    os.environ.pop("SPARK_HOME", None)
+    # 2) Spark 4 cần Java 17+: lấy JDK của lệnh `java` đang có trên PATH.
+    java = shutil.which("java")
+    if java:
+        home = Path(java).resolve().parent.parent
+        if (home / "bin").is_dir() and (home / "lib").is_dir():
+            os.environ["JAVA_HOME"] = str(home)
+    # 3) Python worker phải là Python đang chạy pytest, không phải lối tắt Store.
+    os.environ["PYSPARK_PYTHON"] = sys.executable
+    os.environ["PYSPARK_DRIVER_PYTHON"] = sys.executable
+
+    session = (
+        SparkSession.builder
+        .master("local[1]")
+        .appName("retail-project-tests")
+        .config("spark.ui.enabled", "false")
+        .config("spark.sql.shuffle.partitions", "1")
+        .config("spark.sql.session.timeZone", "UTC")
+        .getOrCreate()
+    )
+
+    yield session
+    session.stop()
+
+@pytest.fixture
+def script_env():
+    """Môi trường cho test chạy script bằng subprocess."""
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(ROOT / "scripts"), env.get("PYTHONPATH", "")]
+    ).rstrip(os.pathsep)
+    return env
