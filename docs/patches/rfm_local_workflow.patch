@@ -1,0 +1,84 @@
+--- a/scripts/retail_pipeline.py
++++ b/scripts/retail_pipeline.py
+@@ -301,8 +301,14 @@
+     ):
+         assert_separate_paths(spark, first, second)
+     # Validate the frozen model before committing an ingestion batch.
+-    model = load_rfm_model(model_path)
+-    k = model.stages[-1].getK()
++    supervised = context.get('rfm_model_kind', 'kmeans') == 'classifier'
++    if supervised:
++        from rfm_supervised import load_bundle, score
++        model, model_info = load_bundle(spark, model_path, context['run_date'])
++        k = model_info['k']
++    else:
++        model = load_rfm_model(model_path)
++        k = model.stages[-1].getK()
+     # Stable across task retries and new DagRuns for the same source/cutoff.
+     batch_id = "dag_" + json_hash([
+         context["source_version"], context["source_hash"], context["run_date"],
+@@ -311,17 +317,18 @@
+         spark, source, store, batch_id, context["run_date"],
+         context["rfm_initialize_store"], None,
+     )
+-    result = score_rfm_with_model(
+-        daily_rfm_population(spark, manifest, context["run_date"]),
+-        model, context["rfm_model_version"],
+-    )
++    population = daily_rfm_population(spark, manifest, context['run_date'])
++    if supervised:
++        result = score(population, model, context['rfm_model_version'])
++    else:
++        result = score_rfm_with_model(population, model, context['rfm_model_version'])
+     history_days = (
+         date.fromisoformat(context["run_date"])
+         - date.fromisoformat(context["first_date"])
+     ).days
+-    result = customer_labels(
+-        result, context["churn_days"], history_days
+-    ).cache()
++    # Existing RFM business rules are separate from numeric cluster prediction.
++    result = customer_labels(result, context['churn_days'], history_days)
++    result = result.cache()
+     try:
+         validate_rfm_output(
+             result, context["run_date"], k, context["rfm_model_version"]
+--- a/scripts/retail_contracts.py
++++ b/scripts/retail_contracts.py
+@@ -104,6 +104,8 @@
+         "retail_pipeline.py",
+         "pyspark_clean.py",
+         "pyspark_rfm.py",
++        "rfm_supervised.py",
++        "train_rfm_classifier.py",
+         "pyspark_anomalies.py",
+     ]
+     return json_hash({name: digest(directory / name) for name in names})
+@@ -172,6 +174,9 @@
+         raise ValueError("rfm_initialize_store must be boolean")
+     if type(churn) is not int or not 1 <= churn <= 3650:
+         raise ValueError("churn_days must be an integer between 1 and 3650")
++    model_kind = params.get('rfm_model_kind', 'kmeans')
++    if model_kind not in ('kmeans', 'classifier'):
++        raise ValueError('Invalid segmentation configuration')
+     run_key = json_hash([dag_id, run_id])
+     context = {
+         "schema_version": SCHEMA_VERSION,
+@@ -189,6 +194,7 @@
+         "rfm_store_path": store_path,
+         "rfm_initialize_store": initialize,
+         "rfm_scoring_scope": "all_customers",
++        "rfm_model_kind": model_kind,
+         "churn_days": churn,
+         "first_date": source["first_date"],
+     }
+--- a/dags/ecommerce_etl_dag.py
++++ b/dags/ecommerce_etl_dag.py
+@@ -85,6 +85,7 @@
+             "curated/rfm_store", type="string", minLength=1,
+         ),
+         "rfm_initialize_store": Param(False, type="boolean"),
++        "rfm_model_kind": Param("kmeans", enum=["kmeans", "classifier"]),
+         "churn_days": Param(90, type="integer", minimum=1, maximum=3650),
+     },
+     default_args={

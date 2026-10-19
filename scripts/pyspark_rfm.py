@@ -63,6 +63,7 @@ def parse_args(argv=None):
                         help="Path to the fitted RFM PipelineModel.")
     parser.add_argument("--model-version", # model version là nhãn version được ghi vào output
                         help="Optional label; defaults to the model directory name.")
+    parser.add_argument('--model-kind', choices=['kmeans', 'classifier'], default='kmeans')
     add_store_arguments(parser, daily=True)
     args = parser.parse_args(argv)
     validate_store_arguments(parser, args)
@@ -306,8 +307,8 @@ def advance_state(old_state, old_invoices, novel):
 # hàm trả về 2 df: updated là customer state mới, và ds hóa đơn đã biết sau khi bổ sung batch mới
 
 
+# tạo thông tin để kiểm tra batch chạy lại có còn đúng nội dung ban đầu không (retry), gộp kết quả theo partition kèm schema
 def _fingerprint(df):
-    """Checksum của batch để phát hiện retry với nội dung khác."""
     rows = df.select(*sorted(df.columns)).toJSON()
     modulus = 1 << 256
     def partition(values):
@@ -318,9 +319,11 @@ def _fingerprint(df):
         yield count, total
     count, total = rows.mapPartitions(partition).fold((0, 0), lambda a, b: (a[0]+b[0], (a[1]+b[1]) % modulus))
     schema = {f.name: f.dataType.jsonValue() for f in df.schema.fields}
-    return {'count': count, 'sha256_sum': hex(total), 'schema': schema}
+    return {'count': count, # số dòng
+            'sha256_sum': hex(total), # mã tổng hợp nội dung
+            'schema': schema} # tên và datatype các cột
 
-
+# đọc manifest
 def _read_json(spark, fs, path):
     """Đọc manifest: danh sách đường dẫn của phiên bản đã hoàn tất."""
     stream = fs.open(path)
@@ -330,16 +333,16 @@ def _read_json(spark, fs, path):
     finally:
         stream.close()
 
-
+# ghi manifest
 def _write_json(fs, path, obj):
     """Ghi manifest trước khi công bố phiên bản mới."""
-    stream = fs.create(path, False)
+    stream = fs.create(path, False) # tạo file, không cho ghi đè file đã tồn tại
     try:
         stream.write(bytearray(json.dumps(obj, sort_keys=True).encode('utf-8')))
     finally:
         stream.close()
 
-
+# tìm các phiên bản đã commit, nhận file có tên gồm 12 chữ số, đuôi json
 def _manifests(spark, fs, root):
     """Liệt kê các manifest đã commit, bỏ qua file tạm."""
     Path = spark._jvm.org.apache.hadoop.fs.Path
@@ -349,7 +352,7 @@ def _manifests(spark, fs, root):
     return sorted([status.getPath() for status in fs.listStatus(path)
                    if status.isFile() and re.fullmatch(r'\d{12}\.json', status.getPath().getName())], key=str)
 
-
+# chọn snapshot cần dùng (sử dụng các helper trên để chọn phiên bản dữ liệu) (duyệt từ ver mới nhất xuống), chỉ chọn và load snapshot đã tồn tại
 def load_manifest(spark, store_path, run_date=None, version=None):
     """Chọn snapshot không vượt ngày chốt, hoặc đúng version khi retry."""
     fs, root = _store_filesystem(spark, store_path)
@@ -364,14 +367,12 @@ def load_manifest(spark, store_path, run_date=None, version=None):
             raise ValueError('Store version includes data beyond requested run-date.')
     raise ValueError('No committed store snapshot for this cutoff; initialize or rebuild historical snapshot.')
 
-
+# nhận manifest của 1 snapshot và đọc bảng được yêu cầu
 def read_store_table(spark, manifest, table):
     """Đọc bảng state/invoices/transactions theo manifest."""
     if table == 'transactions':
         paths = [path for bucket in manifest['buckets'].values()
                  for path in bucket['transactions'].values()]
-        # Read leaf partitions individually to avoid unrelated generation roots
-        # being mistaken for a single Spark partitioned dataset.
         frames = [spark.read.parquet(path) for path in paths]
         return reduce(lambda a, b: a.unionByName(b), frames)
     paths = [bucket[table] for bucket in manifest['buckets'].values()]
@@ -380,25 +381,30 @@ def read_store_table(spark, manifest, table):
     # State is compact (one row/customer). Transactions should be read by date.
     return spark.read.parquet(*paths)
 
-
+# lấy RFM từ state đã lưu (chọn snapshot phù hợp ngày chốt -> đọc state all KH trong snapshot -> chuyển RFM)
 def read_store_rfm(spark, store_path, run_date):
     """Đọc state rồi dựng RFM tại ngày chốt."""
     manifest = load_manifest(spark, store_path, run_date)
     return state_to_rfm(read_store_table(spark, manifest, 'state'), run_date), manifest
 
 
-def _update_store_bucket(spark, fs, generation, key, delta, old):
+def _update_store_bucket(spark, fs, generation, key, delta, old): # generation là thư mục cho lần ghi mới, key là ID bucket đang xử lý,
+    # delta là các dòng trong batch đầu vào thuộc bucket này, old là info đường dẫn dữ liệu cũ của bucket, None nếu bucket chưa có
     """Loại dòng đã có, cập nhật RFM tích lũy rồi ghi một bucket mới."""
     Path = spark._jvm.org.apache.hadoop.fs.Path
+
+    # xác định những ngày có trong batch và lấy days khác nhau
     dates = delta.select(F.to_date('InvoiceDate')).distinct().collect()
     days = sorted(str(row[0]) for row in dates)
+    # tìm dữ liệu cũ của những ngày đó
     tx_map = dict(old['transactions']) if old else {}
     existing_paths = [tx_map[day] for day in days if day in tx_map]
-    if existing_paths:
+    # tìm các dòng thực sự mới
+    if existing_paths: # nếu có đường dẫn cũ thì sẽ đọc giao dịch cũ ở các ngày liên quan và kiểm tra schema tương thích
         frames = [spark.read.parquet(path) for path in existing_paths]
         existing = reduce(lambda a, b: a.unionByName(b), frames)
         _assert_transaction_schema(existing, delta)
-        # Hai giá trị null ở cột phụ cũng được xem là giống nhau.
+        # So sánh all cols (2 giá trị null ở cột phụ cũng được xem là giống nhau)
         condition = F.lit(True)
         for column_name in delta.columns:
             quoted_name = '`' + column_name.replace('`', '``') + '`'
@@ -406,9 +412,10 @@ def _update_store_bucket(spark, fs, generation, key, delta, old):
                 F.col('o.' + quoted_name)
             )
             condition = condition & same_value
-        novel = delta.alias('n').join(existing.alias('o'), condition, 'left_anti')
+
+        novel = delta.alias('n').join(existing.alias('o'), condition, 'left_anti') # left_anti chỉ giữ dòng bên delta không tìm thấy dòng khớp trong existing
         merged = existing.unionByName(delta).dropDuplicates()
-    else:
+    else: # nếu không có dữ liệu cũ ở các ngày đó thì toàn bộ delta dc xem là mới so với các partition liên quan
         novel, merged = delta, delta
     novel = novel.cache()
     try:
@@ -416,42 +423,45 @@ def _update_store_bucket(spark, fs, generation, key, delta, old):
         old_state = spark.read.parquet(old['state']) if old else None
         old_invoices = spark.read.parquet(old['invoices']) if old else None
         changed_state, invoices = advance_state(old_state, old_invoices, novel)
+        # ghi dữ liệu vào thư mục mới
         base = Path(generation, 'customer_bucket=' + key)
         tx_path = str(Path(base, 'transactions'))
         state_path = str(Path(base, 'state'))
         invoice_path = str(Path(base, 'invoices'))
         # Ghi vào đường dẫn mới; phiên bản cũ vẫn đọc được.
         (merged.withColumn('transaction_date', F.to_date('InvoiceDate'))
-         .write.mode('errorifexists')
+         .write.mode('errorifexists') # báo lỗi nếu đường dẫn đã tồn tại, 0 ghi đè dữ liệu ver cũ
          .partitionBy('transaction_date')
          .parquet(tx_path))
         changed_state.write.mode('errorifexists').parquet(state_path)
         invoices.write.mode('errorifexists').parquet(invoice_path)
         written_paths = (tx_path, state_path, invoice_path)
+        # Kiểm tra ghi hoàn tất
         if any(not fs.exists(Path(path + '/_SUCCESS')) for path in written_paths):
             raise ValueError('Bucket write did not complete.')
+        # update bản đồ đường dẫn
         for day in days:
             tx_map[day] = tx_path + '/transaction_date=' + day
         return {'transactions': tx_map, 'state': state_path, 'invoices': invoice_path}
     finally:
-        novel.unpersist()
+        novel.unpersist() # giải phóng cache vì novel đã được dùng xong
 
 
+#  Công bố phiên bản chỉ sau khi mọi bucket đã ghi thành công
 def _publish_store_manifest(spark, fs, root, manifest):
-    """Công bố phiên bản chỉ sau khi mọi bucket đã ghi thành công."""
     Path = spark._jvm.org.apache.hadoop.fs.Path
     commits = Path(root, '_commits')
     fs.mkdirs(commits)
     pending = Path(root, '_pending_' + uuid4().hex + '.json')
     _write_json(fs, pending, manifest)
     destination = Path(commits, manifest['version'] + '.json')
-    if fs.exists(destination) or not fs.rename(pending, destination):
+    if fs.exists(destination) or not fs.rename(pending, destination): # ngăn ghi đè manifest đã có và báo lỗi nếu 0 công bố được
         raise ValueError('Atomic manifest publication failed.')
 
-
+# """Đọc batch → kiểm tra retry → cập nhật bucket → công bố phiên bản."""
 def ingest_store(spark, input_path, store_path, batch_id, run_date,
                  initialize=False, num_buckets=64):
-    """Đọc batch → kiểm tra retry → cập nhật bucket → công bố phiên bản."""
+    # check tham số
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}', batch_id or ''):
         raise ValueError('Invalid batch-id.')
     if num_buckets is not None and not 1 <= num_buckets <= 4096:
@@ -462,24 +472,27 @@ def ingest_store(spark, input_path, store_path, batch_id, run_date,
     fs, root = _store_filesystem(spark, store_path)
     Path = spark._jvm.org.apache.hadoop.fs.Path
     fs.mkdirs(root)
+    # lấy quyền ghi bằng lock
     lock = Path(root, '_writer.lock')
     if not fs.createNewFile(lock):
         raise ValueError('Store locked; inspect previous writer before retrying.')
     # Chỉ một writer được cập nhật store tại một thời điểm.
+
+    # đọc và chuẩn hóa input
     incoming = None
     try:
         # 1. Đọc và kiểm tra batch; không nhận giao dịch sau ngày chốt.
         incoming = canonical_transactions(spark.read.parquet(input_path)).cache()
         if incoming.where(F.col('InvoiceDate') >= F.lit(run_date).cast('timestamp')).limit(1).count():
             raise ValueError('Input contains transactions on/after run-date; split input or choose a later cutoff.')
-        fingerprint = _fingerprint(incoming)
+        fingerprint = _fingerprint(incoming) # lấy fingerprint và trạng thái store hiện tại
         paths = _manifests(spark, fs, root)
         previous = _read_json(spark, fs, paths[-1]) if paths else None
         if num_buckets is None:
             num_buckets = previous['num_buckets'] if previous else DEFAULT_NUM_BUCKETS
         # 2. Retry dùng snapshot cũ; batch mới phải đúng schema và cutoff.
         if previous:
-            if batch_id in previous['batches']:
+            if batch_id in previous['batches']: # phân biệt retry và batch mới
                 entry = previous['batches'][batch_id]
                 if entry['fingerprint'] != fingerprint or entry['run_date'] != run_date:
                     raise ValueError('Conflicting batch-id: content/cutoff changed.')
@@ -497,6 +510,8 @@ def ingest_store(spark, input_path, store_path, batch_id, run_date,
         version = f'{len(paths)+1:012d}'
         generation = Path(root, '_generations/' + version + '_' + uuid4().hex)
         bucket_map = dict(previous['buckets']) if previous else {}
+
+        # phân khách vào bucket: mỗi giao dịch trong batch sẽ được gán vào một bucket dựa trên CustomerID -> để update bucket
         tagged = incoming.withColumn('_customer_bucket', F.pmod(F.xxhash64('CustomerID'), F.lit(num_buckets))).cache()
         try:
             touched_buckets = sorted(row[0] for row in tagged.select('_customer_bucket').distinct().collect())
@@ -511,10 +526,11 @@ def ingest_store(spark, input_path, store_path, batch_id, run_date,
             tagged.unpersist()
         # 4. Chỉ công bố manifest sau khi mọi bảng đã ghi xong.
         batches = dict(previous['batches']) if previous else {}
-        batches[batch_id] = {'fingerprint': fingerprint, 'run_date': run_date, 'version': version}
+        batches[batch_id] = {'fingerprint': fingerprint, 'run_date': run_date, 'version': version} # ghi nhận để lần retry sau biết batch đã xử lý
         manifest = {'format_version': 1, 'version': version, 'run_date': run_date,
                     'num_buckets': num_buckets, 'schema': fingerprint['schema'],
                     'buckets': bucket_map, 'batches': batches}
+        # công bố và trả kết quả
         _publish_store_manifest(spark, fs, root, manifest)
         return manifest
     finally:
@@ -524,7 +540,7 @@ def ingest_store(spark, input_path, store_path, batch_id, run_date,
         fs.delete(lock, False)
 
 
-# Tính RFM từ giao dịch: dùng khi chọn k và đối chiếu với incremental.
+# Tính RFM từ giao dịch
 def compute_rfm(
     history: DataFrame,
     run_date: str,
@@ -625,6 +641,7 @@ def prepare_kmeans_features(rfm: DataFrame) -> DataFrame:
         .withColumn("Monetary_log", F.log1p(F.col("Monetary").cast("double")))
     )
 
+# ghép vector và chuẩn hóa
 def kmeans_feature_pipeline() -> Pipeline:
     """Assembles the *_log columns into a vector and standard-scales them
     (no KMeans stage). Fit once and reuse across every k you try.
@@ -640,7 +657,7 @@ def kmeans_feature_pipeline() -> Pipeline:
     return Pipeline(stages=[assembler, scaler])
 
 
-# Load model đã training; daily chỉ transform.
+# Load model đã training; kiểm tra cấu trúc và cấu hình; daily chỉ transform.
 def load_rfm_model(model_path: str) -> PipelineModel:
     """Fail fast if the artifact does not follow the shared feature contract."""
     model = PipelineModel.load(model_path)
@@ -664,7 +681,7 @@ def load_rfm_model(model_path: str) -> PipelineModel:
         raise ValueError("RFM model preprocessing/Cluster contract does not match this job.")
     return model # trả về model hợp lệ để daily transform
 
-
+# dùng pipeline đã lưu để phân cụm dữ liệu daily
 def score_rfm_with_model(rfm: DataFrame, model: PipelineModel,
                          model_version: str) -> DataFrame:
     """Reuse saved mean/std and centroids; sparse daily populations are allowed."""
@@ -674,7 +691,7 @@ def score_rfm_with_model(rfm: DataFrame, model: PipelineModel,
     return (clustered.drop(*LOG_FEATURES, "raw_features", "features")
             .withColumn("model_version", F.lit(model_version)))
 
-
+# đọc model từ model path -> phân cụm bảng RFM -> gán model_version vào kqua
 def add_rfm_segment(rfm: DataFrame, model_path: str,
                     model_version: str) -> DataFrame:
     """Daily entry point: load + transform only; never fit/retrain."""
@@ -682,7 +699,7 @@ def add_rfm_segment(rfm: DataFrame, model_path: str,
         raise ValueError("model_path and model_version must not be blank.")
     return score_rfm_with_model(rfm, load_rfm_model(model_path), model_version)
 
-
+# gọi training để tạo model (chuyển việc training sang train_model trong file train_rfm_kmeans) -> DAG dùng chung logic trainign đã có
 def fit_rfm_model(
     rfm: DataFrame, k: int, seed: int = DEFAULT_KMEANS_SEED
 ) -> PipelineModel:
@@ -693,7 +710,7 @@ def fit_rfm_model(
         from train_rfm_kmeans import train_model
     return train_model(rfm, k, seed)
 
-
+# đã có model -> phân cụm
 def apply_rfm_model(rfm: DataFrame, model: PipelineModel) -> DataFrame:
     """Score a frozen DAG model; the caller attaches its registry version."""
     return model.transform(prepare_kmeans_features(rfm)).drop(
@@ -784,14 +801,24 @@ def write_rfm(
     """Overwrite only the partition for the current cutoff date."""
     validate_rfm_output(result, run_date, k=k, model_version=model_version)
     output_path = f"{output_root.rstrip('/')}/run_date={run_date}"
+    if 'supervised_model_id' in result.columns:
+        # Classifier outputs remain immutable across retries/backfills.
+        fs, target = _store_filesystem(result.sparkSession, output_path)
+        if fs.exists(target):
+            existing = result.sparkSession.read.parquet(output_path).select(*result.columns)
+            if not result.exceptAll(existing).isEmpty() or not existing.exceptAll(result).isEmpty():
+                raise ValueError('Classifier output already exists with different state; use a new output root')
+            return output_path
+        result.write.mode('errorifexists').parquet(output_path)
+        return output_path
     (
-        result.drop("run_date")
+        result.drop('run_date')
         .write.mode("overwrite")
         .parquet(output_path)
     )
     return output_path
 
-
+# cđọc state của all customers và chuyển sang RFM tại ngày chốt -> chấm điểm RFM trên toàn bộ khách
 def daily_rfm_population(spark, manifest, run_date):
     """Score the complete committed state, including customers idle today.
 
@@ -804,11 +831,13 @@ def daily_rfm_population(spark, manifest, run_date):
 
 # 7. Daily: cập nhật incremental state rồi phân nhóm toàn bộ khách.
 def main():
+    # đọc tham số
     args = parse_args()
     spark = None
     result = None
 
     try:
+        # khởi tạo môi trường Spark
         spark = (
             SparkSession.builder
             .appName("CalculateRFM")
@@ -821,19 +850,30 @@ def main():
             (args.store_path, args.output), (args.store_path, args.model_path),
             (args.output, args.model_path),
         ):
+            # check path không chồng nhau
             assert_separate_paths(spark, first, second)
         assert_separate_paths(spark, args.input, args.output)
         assert_separate_paths(spark, args.input, args.model_path)
+        if args.model_kind == 'classifier':
+            from rfm_supervised import load_bundle
+            load_bundle(spark, args.model_path, args.run_date)
+        # nhập batch vào store
         manifest = ingest_store(
             spark, args.input, args.store_path, args.batch_id,
             args.run_date, args.initialize_store, args.num_buckets,
         )
+        # tạo RFM và score cho toàn bộ khách
         rfm = daily_rfm_population(spark, manifest, args.run_date)
-        model = load_rfm_model(args.model_path)
-        k = model.stages[-1].getK() # stage cuối KMeansModel, lấy số cụm đã được cấu hình trong model
-        result = score_rfm_with_model( # chấm điểm và socring -> output gồm metrics, điểm, Cluster và version
-            rfm, model, args.model_version
-        ).cache()
+        if args.model_kind == 'classifier':
+            from rfm_supervised import daily
+            result, k = daily(spark, rfm, args.model_path,
+                              args.run_date, args.model_version)
+            result = result.cache()
+        else:
+            model = load_rfm_model(args.model_path)
+            k = model.stages[-1].getK()
+            result = score_rfm_with_model(rfm, model, args.model_version).cache()
+        # đếm khách và cảnh báo nếu quá ít
         customer_count = result.count()
 
         if customer_count < 5:

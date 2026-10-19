@@ -96,3 +96,9 @@
 | DONE | Recheck GitHub pull; verify both local RFM files unchanged by SHA256 | Codex | `initial-setup` | Remote repository |
 | DONE | Pull current upstream with --ff-only; confirmed already up to date on 2026-09-20 | Codex | `initial-setup` | Remote repository |
 | DONE | Pull origin/main 4fe270f preserving 39 local files by SHA256 (2026-10-03) | Codex | `initial-setup` | Backup and retained stash |
+
+| DONE | Prepare standalone supervised RFM publication and preserve local workflow patch | Codex | codex/rfm-supervised-20261019 | Adapt registry integration separately; preserve upstream DAG |
+
+2026-10-19 correction: prior publication withdrawn with lease; model predicts numeric Cluster directly. All naming/holding/prior-label policy removed. Owner Codex, branch codex/rfm-supervised-20261019. 3 contract tests and syntax checks pass; Spark unavailable. No new commit/push; runtime review pending.
+
+2026-10-19: User authorized republishing corrected direct-cluster RFM. Owner Codex; branch codex/rfm-supervised-20261019. Prepared exact source/test/docs scope; no VIP/prior-label policy in executable changes. 3 contract tests and 5 syntax checks pass. Shared workflow retained as unapplied patch; Docker/Spark validation remains pending.

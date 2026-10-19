@@ -687,3 +687,11 @@ Local follow-up: verify the RFM input contract against the new cleaning output a
 - Verification: SHA256 comparisons against temporary backups passed for `scripts/pyspark_rfm.py` and `tests/test_pyspark_rfm.py`; both files are unchanged.
 - `git status --short --branch`: ahead of origin by 4 commits; existing local changes remain. No push performed.
 - Risks: existing uncommitted work remains local. Next action: continue RFM work.
+
+## RFM supervised publication - 2026-10-19
+
+Owner Codex, branch codex/rfm-supervised-20261019, based on f671393. User authorized push. Standalone RFM classifier source/test/docs included; divergent local shared workflow preserved as docs/patches/rfm_local_workflow.patch rather than replacing upstream model registry. Syntax and six actual extracted CLI cases pass; Spark unavailable today. Historical test evidence retained with dates. No data/models/notebooks or unrelated source included. Next: adapt classifier into upstream model registry and run Docker verification before main integration.
+
+2026-10-19 correction: prior publication withdrawn with lease; model predicts numeric Cluster directly. All naming/holding/prior-label policy removed. Owner Codex, branch codex/rfm-supervised-20261019. 3 contract tests and syntax checks pass; Spark unavailable. No new commit/push; runtime review pending.
+
+2026-10-19: User authorized republishing corrected direct-cluster RFM. Owner Codex; branch codex/rfm-supervised-20261019. Prepared exact source/test/docs scope; no VIP/prior-label policy in executable changes. 3 contract tests and 5 syntax checks pass. Shared workflow retained as unapplied patch; Docker/Spark validation remains pending.
