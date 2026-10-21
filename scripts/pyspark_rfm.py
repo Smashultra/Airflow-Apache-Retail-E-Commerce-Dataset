@@ -2,6 +2,7 @@
 
 Training import helper từ file này; chỉ main() bên dưới chạy daily.
 """
+from __future__ import annotations
 import argparse
 import sys
 import logging
@@ -805,11 +806,16 @@ def write_rfm(
         # Classifier outputs remain immutable across retries/backfills.
         fs, target = _store_filesystem(result.sparkSession, output_path)
         if fs.exists(target):
-            existing = result.sparkSession.read.parquet(output_path).select(*result.columns)
+            marker = result.sparkSession._jvm.org.apache.hadoop.fs.Path(target, '_SUCCESS')
+            if not fs.exists(marker):
+                raise ValueError('Existing classifier output is incomplete; recover before retry')
+            existing = (result.sparkSession.read.parquet(output_path)
+                        .withColumn('run_date', F.lit(run_date).cast('date'))
+                        .select(*result.columns))
             if not result.exceptAll(existing).isEmpty() or not existing.exceptAll(result).isEmpty():
                 raise ValueError('Classifier output already exists with different state; use a new output root')
             return output_path
-        result.write.mode('errorifexists').parquet(output_path)
+        result.drop('run_date').write.mode('errorifexists').parquet(output_path)
         return output_path
     (
         result.drop('run_date')

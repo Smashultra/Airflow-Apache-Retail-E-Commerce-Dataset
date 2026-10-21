@@ -2,7 +2,7 @@
 
 import os
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 from retail_contracts import (
@@ -19,6 +19,15 @@ from retail_contracts import (
 
 FEATURE_VERSION = "rfm-log1p-standard-v1"
 SCORE_REFERENCE_MODE = "daily_population_percent_rank"
+
+
+def bundle_hashes(root, bundle_path):
+    directory = safe_path(root, bundle_path)
+    files = {p.relative_to(directory).as_posix(): digest(safe_path(directory, p))
+             for p in sorted(directory.rglob('*')) if p.is_file()}
+    if not any(p.startswith('supervised_info/part-') for p in files):
+        raise ValueError('Incomplete classifier bundle')
+    return files
 
 
 @contextmanager
@@ -63,6 +72,17 @@ def read_model(root, binding, *, verify_artifact=False):
     token(model["model_version"])
     iso_date(model["training_cutoff"])
     safe_path(root, model["pipeline_path"])
+    kind = model.get('model_kind', 'kmeans')
+    if kind not in ('kmeans', 'classifier'):
+        raise ValueError('Unknown registered model kind')
+    if kind == 'classifier':
+        info = model['supervised_info']
+        if (info.get('schema_version') != 3 or info.get('fit_cutoff') != model['training_cutoff']
+                or info.get('k') != model['k']
+                or model['pipeline_path'] != model['bundle_path'].rstrip('/') + '/student'):
+            raise ValueError('Classifier registry provenance mismatch')
+        if verify_artifact and bundle_hashes(root, model['bundle_path']) != model['bundle_hashes']:
+            raise ValueError('Classifier bundle hash mismatch')
     if (
         verify_artifact
         and artifact_hashes(root, model["pipeline_path"])
@@ -182,6 +202,25 @@ def build_training_context(root, dag_id, run_id, cutoff, params):
         ).as_posix(),
         "etl_hash": json_hash(etl),
     }
+    # Legacy callers remain KMeans; the monthly DAG explicitly selects classifier.
+    kind = params.get('model_kind', 'kmeans')
+    if kind not in ('kmeans', 'classifier'):
+        raise ValueError('Unknown training model kind')
+    if kind == 'classifier':
+        from retail_contracts import check_dates, parameter_grid
+        end = iso_date(cutoff)
+        train_date = params.get('classifier_train_date') or (end - timedelta(days=90)).isoformat()
+        validation_date = params.get('classifier_validation_date') or (end - timedelta(days=60)).isoformat()
+        test_date = params.get('classifier_test_date') or (end - timedelta(days=30)).isoformat()
+        check_dates(train_date, validation_date, test_date, cutoff)
+        trees, depths = params.get('num_trees_grid', [60, 150]), params.get('max_depth_grid', [4, 8, 12])
+        parameter_grid(trees, depths)
+        minimum = params.get('min_macro_f1', 0.8)
+        if not isinstance(minimum, (int, float)) or not 0 <= minimum <= 1:
+            raise ValueError('Invalid validation gate')
+        value.update(model_kind=kind, classifier_train_date=train_date,
+                     classifier_validation_date=validation_date, classifier_test_date=test_date,
+                     num_trees_grid=trees, max_depth_grid=depths, min_macro_f1=minimum)
     path = context_file(root, value["run_key"])
     with registry_lock(root):
         if path.exists() and read_json(path) != value:

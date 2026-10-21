@@ -20,7 +20,7 @@ def should_train(params):
 
 with DAG(
     dag_id="retail_rfm_training_dag",
-    description="Train and activate versioned RFM scaler/KMeans models",
+    description="Select, refit and activate versioned RFM classifiers (or legacy KMeans)",
     schedule=CronDataIntervalTimetable("0 0 1 * *", timezone="UTC"),
     start_date=pendulum.datetime(2010, 12, 1, tz="UTC"),
     # Include manual logical times throughout the final historical day.
@@ -39,6 +39,13 @@ with DAG(
         "on_retry_callback": log_retry,
     },
     params={
+        "model_kind": Param("classifier", enum=["classifier", "kmeans"]),
+        "classifier_train_date": Param(None, type=["null", "string"], format="date"),
+        "classifier_validation_date": Param(None, type=["null", "string"], format="date"),
+        "classifier_test_date": Param(None, type=["null", "string"], format="date"),
+        "num_trees_grid": Param([60, 150], type="array", minItems=1, items={"type": "integer", "minimum": 1, "maximum": 1000}),
+        "max_depth_grid": Param([4, 8, 12], type="array", minItems=1, items={"type": "integer", "minimum": 1, "maximum": 30}),
+        "min_macro_f1": Param(0.8, type="number", minimum=0, maximum=1),
         "training_cutoff": Param(
             None,
             type=["null", "string"],
@@ -86,6 +93,16 @@ Read evaluate_k logs and data/analytics/k_selection/<run_key>/k_scores.csv
 Trigger a NEW run with those same inputs, report_only=false and your rfm_k.
 Normal runs generate the report then train with the supplied rfm_k (default 2).
 There is no pause for approval and no automatic K selection.
+
+model_kind defaults to classifier. Default teacher/validation/test cutoffs are
+training_cutoff minus 90/60/30 days; override classifier_*_date when needed.
+The K report uses the teacher cutoff, not validation/test data. RF parameters
+are selected on new-customer validation macro-F1. Test is scored once, then
+the selected classifier is refit at training_cutoff with the frozen teacher.
+Registry activation publishes the full verified bundle. Daily dispatch follows
+the pinned model kind; activating a new model does not alter existing runs.
+Initial periods without sufficient history or new validation customers fail
+closed. Legacy KMeans training remains available with model_kind=kmeans.
 """,
 ) as dag:
     validate = PythonOperator(

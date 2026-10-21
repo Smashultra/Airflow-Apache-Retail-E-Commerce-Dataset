@@ -220,10 +220,17 @@ def run_rfm(spark, context, output, root):
         context["source_hash"],
     )
     manifest = read_model(root, context["model"], verify_artifact=True)
-    model = PipelineModel.load(str(safe_path(root, manifest["pipeline_path"])))
-    result = apply_rfm_model(
-        add_rfm_scores(compute_rfm(history, context["run_date"])), model
-    ).withColumns(
+    population = add_rfm_scores(compute_rfm(history, context["run_date"]))
+    if manifest.get('model_kind', 'kmeans') == 'classifier':
+        from rfm_supervised import load_bundle, score
+        model, info = load_bundle(spark, str(safe_path(root, manifest['bundle_path'])), context['run_date'])
+        if json_hash(info) != json_hash(manifest['supervised_info']):
+            raise ValueError('Classifier metadata differs from registered manifest')
+        result = score(population, model, manifest['model_version'])
+    else:
+        model = PipelineModel.load(str(safe_path(root, manifest['pipeline_path'])))
+        result = apply_rfm_model(population, model)
+    result = result.withColumns(
         {
             "model_version": F.lit(manifest["model_version"]),
             "feature_version": F.lit(FEATURE_VERSION),

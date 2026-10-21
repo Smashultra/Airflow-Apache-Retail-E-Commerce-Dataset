@@ -114,7 +114,7 @@ def resolve_inputs(args):
     if json_hash(etl) != context["etl_hash"] or source["run_date"] != context["run_date"]:
         raise ValueError("Training ETL generation or cutoff changed")
     args.input = str(safe_path(root, etl["outputs"]["transactions"]))
-    args.run_date = context["run_date"]
+    args.run_date = context.get("classifier_train_date", context["run_date"])
     args.seed = context["seed"]
     args.output = str(safe_path(root, f"analytics/k_selection/{context['run_key']}"))
     return context

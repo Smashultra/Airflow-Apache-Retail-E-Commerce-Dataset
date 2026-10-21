@@ -3,6 +3,7 @@
 import csv
 import hashlib
 import json
+import math
 import os
 import re
 from contextlib import contextmanager
@@ -107,6 +108,8 @@ def code_version():
         "pyspark_clean.py",
         "pyspark_rfm.py",
         "train_rfm_kmeans.py",
+        "rfm_supervised.py",
+        "train_rfm_classifier.py",
         "pyspark_anomalies.py",
     ]
     return json_hash({name: digest(directory / name) for name in names})
@@ -294,3 +297,65 @@ def publish_completion(root, context):
             summary,
         )
     return summary
+
+
+# RFM classifier: temporal validation, metrics and parameter selection.
+def check_dates(train_date, validation_date, test_date, refit_date=None):
+    values = [date.fromisoformat(v) for v in (train_date, validation_date, test_date)]
+    if not values[0] < values[1] < values[2]:
+        raise ValueError('Require train < validation < test cutoff')
+    if refit_date is not None and date.fromisoformat(refit_date) < values[2]:
+        raise ValueError('Refit cutoff must be at or after test cutoff')
+
+
+def parameter_grid(trees, depths):
+    if not trees or not depths:
+        raise ValueError('RF grid must not be empty')
+    if any(type(n) is not int or not 1 <= n <= 1000 for n in trees):
+        raise ValueError('numTrees must be in [1,1000]')
+    if any(type(n) is not int or not 1 <= n <= 30 for n in depths):
+        raise ValueError('maxDepth must be in [1,30]')
+    return [dict(num_trees=n, max_depth=d) for n in sorted(set(trees)) for d in sorted(set(depths))]
+
+
+def confusion_metrics(cells, k):
+    """Macro over union of actual/predicted labels; unused labels have F1=None."""
+    if type(k) is not int or k < 2:
+        raise ValueError('k must be >=2')
+    counts = {}
+    for row in cells:
+        a, p, n = int(row['label']), int(row['predicted']), int(row['count'])
+        if not (0 <= a < k and 0 <= p < k and n > 0):
+            raise ValueError('Invalid confusion cell')
+        counts[a, p] = counts.get((a, p), 0) + n
+    total = sum(counts.values())
+    classes = []
+    for c in range(k):
+        tp = counts.get((c, c), 0)
+        actual = sum(n for (a, _), n in counts.items() if a == c)
+        predicted = sum(n for (_, p), n in counts.items() if p == c)
+        included = bool(actual or predicted)
+        classes.append(dict(cluster=c, support=actual, predicted=predicted,
+                            precision=tp / predicted if predicted else None,
+                            recall=tp / actual if actual else None,
+                            f1=2 * tp / (actual + predicted) if included else None,
+                            included_in_macro=included))
+    f1s = [c['f1'] for c in classes if c['included_in_macro']]
+    return dict(customers=total, agreement=sum(n for (a, p), n in counts.items() if a == p) / total if total else None,
+                macro_f1=sum(f1s) / len(f1s) if f1s else None,
+                macro_labels=[c['cluster'] for c in classes if c['included_in_macro']],
+                macro_definition='union_of_true_and_predicted_labels', per_class=classes,
+                confusion=[dict(label=a, predicted=p, count=n) for (a, p), n in sorted(counts.items())])
+
+
+def choose_candidate(candidates, minimum):
+    if not math.isfinite(minimum) or not 0 <= minimum <= 1:
+        raise ValueError('Validation threshold must be in [0,1]')
+    eligible = [c for c in candidates if c['validation']['new']['macro_f1'] is not None]
+    if not eligible:
+        raise ValueError('No new validation customers; change split instead of falling back to seen customers')
+    # Predeclared deterministic tie-break: smaller forest, then shallower trees.
+    winner = min(eligible, key=lambda c: (-c['validation']['new']['macro_f1'], c['params']['num_trees'], c['params']['max_depth']))
+    if winner['validation']['new']['macro_f1'] < minimum:
+        raise ValueError('New-customer validation gate failed; no bundle released')
+    return winner

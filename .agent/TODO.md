@@ -1,5 +1,7 @@
 # TODO
 
+| IMPLEMENTED; DOCKER VERIFICATION PENDING | Address RFM peer review: temporal tuning/cohorts/refit, model validation, registry/DAG integration and real tests | Codex | codex/rfm-supervised-20261019 | 35 passed / 4 platform skips; docs/RFM_SUPERVISED_VI.md; no commit/push |
+
 | Status | Task | Owner | Branch | Dependency |
 |---|---|---|---|---|
 | DONE | Isolated UI sensor pool deadlock demonstration | Codex | main | 2 tests passed; UI pool setup documented; live demo not triggered |
@@ -102,3 +104,7 @@
 2026-10-19 correction: prior publication withdrawn with lease; model predicts numeric Cluster directly. All naming/holding/prior-label policy removed. Owner Codex, branch codex/rfm-supervised-20261019. 3 contract tests and syntax checks pass; Spark unavailable. No new commit/push; runtime review pending.
 
 2026-10-19: User authorized republishing corrected direct-cluster RFM. Owner Codex; branch codex/rfm-supervised-20261019. Prepared exact source/test/docs scope; no VIP/prior-label policy in executable changes. 3 contract tests and 5 syntax checks pass. Shared workflow retained as unapplied patch; Docker/Spark validation remains pending.
+
+DONE: Consolidate RFM helper/tests/docs; 20 focused tests passed. Owner Codex; branch codex/rfm-supervised-20261019.
+
+2026-10-21: User authorized publishing consolidated RFM review fixes. Owner Codex; branch codex/rfm-supervised-20261019. Scope: RFM scripts, registry/DAG integration, tests and documentation only. Docker acceptance remains pending.

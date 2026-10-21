@@ -695,3 +695,17 @@ Owner Codex, branch codex/rfm-supervised-20261019, based on f671393. User author
 2026-10-19 correction: prior publication withdrawn with lease; model predicts numeric Cluster directly. All naming/holding/prior-label policy removed. Owner Codex, branch codex/rfm-supervised-20261019. 3 contract tests and syntax checks pass; Spark unavailable. No new commit/push; runtime review pending.
 
 2026-10-19: User authorized republishing corrected direct-cluster RFM. Owner Codex; branch codex/rfm-supervised-20261019. Prepared exact source/test/docs scope; no VIP/prior-label policy in executable changes. 3 contract tests and 5 syntax checks pass. Shared workflow retained as unapplied patch; Docker/Spark validation remains pending.
+
+## RFM peer review correction - 2026-10-21
+
+Owner Codex, branch codex/rfm-supervised-20261019. Implemented temporal grid selection on new-customer validation macro-F1, all/seen/new cohorts, observed-union macro-F1, validation-only gate and single pre-refit test evaluation. Refit student at latest cutoff with fixed teacher; schema v3 records evaluated/deployed IDs. Strict model/metadata contracts and consistent partition schema. Integrated classifier with existing training context, registry hashes/activation and daily dispatch; monthly DAG defaults classifier. K report uses teacher cutoff. Removed obsolete workflow patch.
+
+Verification: 35 distinct tests passed across focused runs, four platform-specific disk/lifecycle tests skipped; actual Spark grid/refit and daily adapter dispatch covered. 27 Python files parsed. Full-data quality, persistence and Airflow scheduler/DagBag remain unverified here; see docs/RFM_SUPERVISED_VI.md. No commit/push. Original initial-setup checkout has divergent shared workflow and was not overwritten. Next: teammate review and project Docker acceptance suite before activation.
+
+## RFM file consolidation - 2026-10-21
+
+Owner Codex, branch codex/rfm-supervised-20261019. Moved pure classifier helpers into existing retail_contracts.py, registry tests into test_supervised_contracts.py, and verification/review notes into docs/RFM_SUPERVISED_VI.md. Removed four redundant files and updated imports/fingerprinting/references. No training or daily behavior change intended. Verification: pytest -q tests/test_supervised_contracts.py tests/test_retail_models.py tests/test_retail_contracts.py -> 20 passed in 5.28s. Docker/Airflow checks remain pending. No commit/push.
+
+## RFM review publication - 2026-10-21
+
+User authorized commit/push of consolidated RFM changes to codex/rfm-supervised-20261019. Remote branch checked at 518a976 with no divergence before publication. Includes classifier tuning/refit, registry and DAG integration, focused tests and consolidated guide. Verification retained: 35 distinct passes and four platform skips before consolidation; 20 focused passes after consolidation (overlapping, not additive); git diff --check passed. No model activation or main merge. Next: teammate review, Docker persistence/lifecycle and Airflow acceptance, then full-data evaluation. Earlier no-push notes describe earlier checkpoints.
