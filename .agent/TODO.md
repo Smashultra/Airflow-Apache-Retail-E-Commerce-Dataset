@@ -1,9 +1,9 @@
-# TODO
-
-| IMPLEMENTED; DOCKER VERIFICATION PENDING | Address RFM peer review: temporal tuning/cohorts/refit, model validation, registry/DAG integration and real tests | Codex | codex/rfm-supervised-20261019 | 35 passed / 4 platform skips; docs/RFM_SUPERVISED_VI.md; no commit/push |
+# Project tasks
 
 | Status | Task | Owner | Branch | Dependency |
 |---|---|---|---|---|
+| READY TO PUSH | Publish scoped RFM corrections and DAG operator guide to main | Codex | codex/rfm-supervised-20261019 -> main | User authorized 2026-10-22; 47 Docker tests passed; live scheduler pending |
+| IMPLEMENTED; DOCKER VERIFICATION PENDING | Address RFM peer review: temporal tuning/cohorts/refit, model validation, registry/DAG integration and real tests | Codex | codex/rfm-supervised-20261019 | Baseline published 45b4893; teammate reports Docker 25 passed; local environment limits remain |
 | DONE | Isolated UI sensor pool deadlock demonstration | Codex | main | 2 tests passed; UI pool setup documented; live demo not triggered |
 | DONE | Minimal UI idempotency demo with published branch reuse log | Codex | main | 20 publication tests passed; docs/DEMO_IDEMPOTENCY_VI.md; no real UI run |
 | DONE | Add opt-in one-shot audit pre-publication failure for UI atomicity demo | Codex | main | 45 Docker tests passed; docs/DEMO_ATOMICITY_VI.md; no full-data demo run |
@@ -98,8 +98,13 @@
 | DONE | Recheck GitHub pull; verify both local RFM files unchanged by SHA256 | Codex | `initial-setup` | Remote repository |
 | DONE | Pull current upstream with --ff-only; confirmed already up to date on 2026-09-20 | Codex | `initial-setup` | Remote repository |
 | DONE | Pull origin/main 4fe270f preserving 39 local files by SHA256 (2026-10-03) | Codex | `initial-setup` | Backup and retained stash |
-
 | DONE | Prepare standalone supervised RFM publication and preserve local workflow patch | Codex | codex/rfm-supervised-20261019 | Adapt registry integration separately; preserve upstream DAG |
+| IMPLEMENTED; ENVIRONMENT PENDING | Follow-up peer review: K cutoffs, ranking, tests, documentation and environment check | Codex | codex/rfm-supervised-20261019 | Docker availability |
+
+## Historical notes
+
+
+
 
 2026-10-19 correction: prior publication withdrawn with lease; model predicts numeric Cluster directly. All naming/holding/prior-label policy removed. Owner Codex, branch codex/rfm-supervised-20261019. 3 contract tests and syntax checks pass; Spark unavailable. No new commit/push; runtime review pending.
 
@@ -108,3 +113,9 @@
 DONE: Consolidate RFM helper/tests/docs; 20 focused tests passed. Owner Codex; branch codex/rfm-supervised-20261019.
 
 2026-10-21: User authorized publishing consolidated RFM review fixes. Owner Codex; branch codex/rfm-supervised-20261019. Scope: RFM scripts, registry/DAG integration, tests and documentation only. Docker acceptance remains pending.
+
+RFM cleanup 2026-10-21: owner Codex, branch codex/rfm-supervised-20261019. User authorized GitHub cleanup only: untrack 24 generated outputs (byte-for-byte local preservation verified), ignore their directories, remove obsolete RFM_DAG_HANDOFF_VI.md, update notebook prerequisites. Code, input fixtures and notebooks retained. Separate cleanup commit; pending peer-review code changes remain unstaged.
+
+2026-10-21: Codex simplified RFM reporting at user request: removed optional agreement metric; preserved macro-F1 selection and per-class diagnostics. Synchronized review checkout and Documents initial-setup; backup C:\Users\Lenovo\.codex\.chatgpt-projects\g-p-6a9cd2b108788191b22e1d7768f56837\rfm_metrics_backup_20261021_224259. Verification: test_supervised_contracts.py in Documents checkout: 7 passed in 1.78s. No commit/push.
+
+DONE 2026-10-22: Codex standalone real-data verification: six stages passed on Docker Spark 4.2.0, including daily retry. See RFM_SUPERVISED_VI.md for independent evidence. No activation/push.

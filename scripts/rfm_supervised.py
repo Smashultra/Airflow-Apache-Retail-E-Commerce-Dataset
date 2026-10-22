@@ -9,7 +9,7 @@ from pyspark.ml.feature import StandardScalerModel, VectorAssembler
 from pyspark.ml.functions import vector_to_array
 from pyspark.sql import functions as F
 
-from retail_contracts import check_dates, choose_candidate, confusion_metrics, parameter_grid
+from retail_contracts import candidate_rank, check_dates, choose_candidate, confusion_metrics, parameter_grid
 
 
 def fit_student(rfm, teacher, seed=42, *, num_trees=60, max_depth=8):
@@ -55,7 +55,7 @@ def select_and_refit(train, validation, test, latest, teacher, *, train_date, va
         report = evaluate(validation, teacher, model, ids)
         candidate = dict(params=params, validation=report)
         candidates.append(candidate)
-        key = (-report['new']['macro_f1'], params['num_trees'], params['max_depth'])
+        key = candidate_rank(candidate)
         if best_key is None or key < best_key:
             best_key, best_model = key, model
     winner = choose_candidate(candidates, minimum)

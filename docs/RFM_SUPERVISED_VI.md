@@ -1,164 +1,199 @@
-> Publication update 2026-10-21: user authorized committing and pushing this review to `codex/rfm-supervised-20261019`. Earlier uncommitted/no-push statements below record verification checkpoints. No deployment or model activation is implied.
+# RFM classifier — bàn giao cho người chạy DAG
 
-# RFM supervised — bản sửa review ngày 21/10/2026
+Cập nhật 22/10/2026. Tài liệu này mô tả code hiện tại để tích hợp lên `main`.
+Không cần áp dụng patch thủ công. Chạy các lệnh từ repo được Docker Compose mount,
+không dùng một checkout khác có đường dẫn `data/` khác.
 
-Classifier học pseudo-label của KMeans để daily dự đoán trực tiếp mã Cluster.
-Không đặt tên nghiệp vụ cho cụm, không có VIP hoặc quy tắc giữ nhãn.
+## 1. Phần RFM đã làm gì?
 
-## Training, chọn tham số và refit
+- KMeans là teacher tạo pseudo-label số `Cluster`; RandomForest học các nhãn đó.
+- Training thử grid RF, chọn theo macro-F1 khách mới trên validation, chấm test,
+  rồi refit RF trên snapshot mới nhất với teacher/scaler cố định.
+- Daily nạp model đã được registry gắn với lần chạy và predict; không fit lại.
+- Kiểm tra ngày, snapshot, stages, metadata và hash bundle; retry không tự đổi model.
+- Đã bỏ agreement khỏi báo cáo mới. Không gán tên VIP hay giữ nhãn theo số ngày.
 
-1. Đóng băng KMeans teacher/scaler tại train cutoff. CustomerID chỉ dùng xác định cohort, không là feature.
-2. Fit mỗi RandomForest trên RFM training; grid mặc định numTrees=[60,150], maxDepth=[4,8,12].
-3. Chấm validation và tách all/seen/new. New là CustomerID chưa có trong snapshot train.
-4. Chọn cấu hình theo validation.new.macro_f1. Nếu bằng nhau, ưu tiên ít cây hơn rồi độ sâu thấp hơn.
-5. Gate chỉ dùng macro-F1 validation của khách mới. Không có khách mới thì fail, không tự chuyển sang đánh giá khách cũ.
-6. Chấm test đúng một lần bằng model đã chọn. Không dùng test để chọn tham số hoặc gate release.
-7. Refit student trên snapshot mới nhất (refit cutoff >= test cutoff), giữ teacher/scaler cố định để bảo toàn ý nghĩa ID.
-8. Lưu model triển khai và metadata sau cùng. Daily cutoff phải sau fit_cutoff, không phải chờ thêm hai tháng sau khi model mới đã fit.
+Đây là học cách phân nhóm của KMeans, không phải dự đoán mua lại/churn tương lai.
+Cluster có thể đổi khi RFM đổi. Số cluster giữa hai phiên bản teacher khác nhau
+chưa được căn chỉnh ý nghĩa. Điểm test chỉ thuộc model trước refit.
 
-**Test đánh giá model trước refit.** Metadata lưu evaluated_model_id riêng với model_id của model triển khai, test_scope=pre_refit_model_only. Không gán kết quả holdout cho model refit như thể model đó đã được kiểm chứng trên dữ liệu chưa thấy. Theo dõi model triển khai trên các ngày sau cutoff.
+## 2. Bản đồ file và đường gọi
 
-Không lấy số 150/8 từ ảnh review làm cấu hình cố định. Code chọn lại từ dữ liệu validation của từng lần chạy; các con số teammate cung cấp chưa được tái lập trong lần sửa này.
+| File | Trách nhiệm |
+|---|---|
+| `scripts/pyspark_rfm.py` | Tính RFM, điểm R/F/M, log features, KMeans helpers, kiểm tra output; entry point daily |
+| `scripts/rfm_supervised.py` | Fit/evaluate/select/refit RF; save/load bundle; predict Cluster |
+| `scripts/retail_contracts.py` | Context/hash/path; kiểm tra ngày/grid; metrics và quy tắc xếp hạng RF dùng chung |
+| `scripts/retail_models.py` | Training context, registry, model binding, hash và activation |
+| `scripts/retail_training.py` | Spark job training qua registry; bootstrap ETL không cần model |
+| `scripts/retail_pipeline.py` | Daily từ ETL snapshot → RFM → model → customers/cluster_profile |
+| `scripts/select_kmeans_k.py` | Báo cáo hỗ trợ chọn K tại cutoff teacher; không tự chọn K |
+| `dags/retail_rfm_training_dag.py` | Validate → evaluate K → report-only gate → train → publish |
+| `dags/ecommerce_etl_dag.py`, `dags/ecommerce_etl_dag_allinone.py` | ETL trước nhánh RFM/anomaly; công bố kết quả sau thành công |
+| `dags/retail_support/` | Operator Spark, context, publication, assets và lineage |
+| `scripts/retail_spark_lineage.py` | Dependency của Spark operator/lineage hiện có |
 
-## Metrics
-
-Mỗi cohort có số khách, agreement, confusion matrix, precision/recall/F1 từng lớp và macro-F1.
-Macro-F1 tính trên hợp của các lớp xuất hiện ở nhãn thật hoặc dự đoán. Lớp hoàn toàn vắng mặt được ghi F1=null và loại khỏi mẫu số; lớp chỉ bị dự đoán nhầm vẫn có F1=0 và bị tính lỗi.
-Cohort rỗng ghi metrics=null, không giả định 0 hoặc 1. Báo cáo có macro_labels và support để thấy coverage.
-Agreement/F1 là mức khớp teacher, không phải chất lượng nhãn nghiệp vụ hay dự đoán churn.
-
-## Daily và model contract
-
-Daily: giao dịch mới → state/RFM → preprocessing đã lưu → RandomForest → Cluster.
-Không fit lại model. confidence là điểm chưa hiệu chuẩn và không điều khiển giữ/đổi nhóm.
-Loader kiểm tra schema_version=3, ngày, số lớp, model ID, thứ tự/loại stage, các cột input/output,
-scaler hữu hạn, chiều feature và hyperparameter khớp metadata. Metadata cần marker _SUCCESS.
-Bundle v2 cũ không được nạp bằng contract mới: train phiên bản mới để có provenance đầy đủ.
-
-CLI ghi partition run_date=D nhưng không lặp cột run_date trong file Parquet, giống nhánh KMeans.
-Retry dựng lại run_date từ cutoff để so sánh: cùng nội dung tái dùng, khác nội dung hoặc output thiếu _SUCCESS bị từ chối.
-
-## Airflow đã được nối trong code
-
-- retail_rfm_training_dag mặc định model_kind=classifier; có thể chọn kmeans để dùng luồng cũ.
-- build_training_context đóng băng grid và ngày teacher/validation/test. Nếu không chỉ định, dùng training_cutoff trừ 90/60/30 ngày; production refit dùng chính training_cutoff.
-- select_kmeans_k dùng teacher cutoff cho báo cáo chọn k, không dùng dữ liệu validation/test. k vẫn do người dùng quyết định.
-- retail_training tạo teacher, chọn/refit classifier, lưu/đọc lại bundle rồi ghi candidate theo model registry hiện có.
-- Registry kiểm tra hash của toàn bundle; publish_model giữ cơ chế kích hoạt hiện tại và fail không thay serving model.
-- retail_pipeline.run_rfm đọc model_kind từ manifest đã pin. Với classifier, load_bundle và score; với model cũ, dùng KMeans. Không đổi model giữa retry.
-- Đã bỏ rfm_local_workflow.patch lỗi thời. Không cần áp dụng patch thủ công nữa.
-
-Đây là **tích hợp ở mức code và test dispatch**, chưa là bằng chứng scheduler đã chạy thành công. Model KMeans đang active vẫn được dùng cho tới khi classifier mới được train và activate. Những tháng đầu chưa đủ lịch sử/khách mới có thể fail; cần chọn cutoff phù hợp, không nới validation để chạy cho qua.
-
-Airflow sử dụng các lát event-time của ETL bất biến tại cutoff hiện tại. Đây là đánh giá retrospective; nếu dữ liệu có sửa hồi tố hoặc đến muộn thì cần archive theo thời điểm đã biết để tái hiện online chính xác. Không tuyên bố lọc InvoiceDate tự giải quyết availability leakage.
-
-## Chạy CLI độc lập
-
-```sh
-spark-submit scripts/train_rfm_classifier.py --store-path data/curated/rfm_store --teacher-path data/models/kmeans/v1 --train-date 2011-08-01 --validation-date 2011-09-01 --test-date 2011-10-01 --refit-date 2011-11-01 --num-trees-grid 60 150 --max-depth-grid 4 8 12 --model-output data/models/classifier/v3
-
-spark-submit scripts/pyspark_rfm.py --input data/curated/batch --batch-id batch1 --run-date 2011-11-02 --store-path data/curated/rfm_store --model-kind classifier --model-path data/models/classifier/v3 --model-version classifier_v3 --output data/analytics/rfm_classifier_v3
+```text
+Training DAG → retail_training.py → rfm_supervised.py → candidate → publish_model
+Daily DAG → pyspark_rfm.py --pipeline-context ...
+          → retail_pipeline.run_rfm() → load_bundle()/score()
 ```
 
-Ngày trên là ví dụ. CLI yêu cầu store có snapshot đúng từng cutoff và teacher_info khớp snapshot train. Không lấy snapshot tương lai để suy ngược quá khứ. Ghi riêng đường dẫn mới, không ghi đè bundle đã công bố.
+`train_rfm_classifier.py` và `train_rfm_kmeans.py` là CLI độc lập, không được DAG
+training gọi. CLI dùng incremental store; DAG hiện tính RFM từ lịch sử ETL tích lũy.
+Không mô tả daily DAG là đã dùng incremental customer-state store.
 
-Các file dùng chung: retail_contracts.py (contracts và metrics/validation thuần Python), rfm_supervised.py (Spark fit/evaluate/load/score). train_rfm_classifier.py điều phối CLI, retail_training.py điều phối training qua registry.
+## 3. Ngày, features và đánh giá
 
-API tham khảo: [Spark RandomForestClassifier](https://spark.apache.org/docs/3.5.6/api/python/reference/api/pyspark.ml.classification.RandomForestClassifier.html).
+Với `training_cutoff=2011-11-01`, mặc định:
 
-
----
-
-# Verification - peer review correction 2026-10-21
-
-Checkout: rfm_push_20261019, branch codex/rfm-supervised-20261019, base 518a976.
-Uncommitted changes only; no new push, model activation or production data run.
-
-## Reproduced checks
-
-Runtime: Windows, Python 3.9.25 (existing spark_env), PySpark 3.5.9, Java 17.
-pytest/numpy/pandas/pyarrow installed in workspace-only rfm_review_deps to support testing;
-no project requirements changed. Tests use normal imports, not AST extraction.
-
-1. `pytest -q tests/test_supervised_contracts.py tests/test_supervised_rfm.py tests/test_retail_models.py`
-   at the first verification point: **17 passed, 3 skipped, 59.57s**.
-   Covers exact metrics, selection/gate, real Spark classification/schema/cohorts,
-   invalid pipeline, CLI provenance failures, Airflow adapter classifier dispatch,
-   registry context/hash checks and existing activation failure tests.
-2. After adding the real grid/refit regression:
-   `pytest -q tests/test_supervised_rfm.py -k real_temporal_grid`
-   **1 passed, 11 deselected, 76.64s**. Two actual RF candidates, validation on new IDs,
-   one selected-model test evaluation and production refit with a distinct model UID.
-   Synthetic data: this is functional verification, not a quality benchmark.
-3. `pytest -q tests/test_retail_contracts.py tests/test_pyspark_rfm.py -k 'context or cli'`
-   **17 passed, 107 deselected, 1.53s**.
-4. `pytest -q tests/test_supervised_lifecycle.py`: **1 skipped, 0.65s**.
-5. Python AST syntax checks: **27 files passed**. Git diff whitespace check passed.
-
-Across these non-overlapping tests: **35 passed, 4 skipped**.
-The three persistence/CLI-output tests and one full lifecycle test are explicitly
-skipped on Windows without HADOOP_HOME/native filesystem support. They must run in
-project Linux/Docker; skipped is NOT passed.
-
-## Remaining verification
-
-- Bundle persistence roundtrip, cutoff rejection after disk load, immutable output
-  retry/schema and complete standalone daily CLI.
-- Full bootstrap -> classifier training -> registry activation -> daily lifecycle.
-- Actual Airflow DagBag import/serialization/scheduler run with the project's versions.
-- Full-data tuning, performance and quality/coverage by cohort. No winning full-data
-  parameters or score from the teammate's screenshot were reproduced here.
-- Replay with point-in-time availability if source records can arrive late/be revised.
-
-Suggested project Docker command after mounting this checkout:
-
-```sh
-python -m pytest -q tests/test_supervised_contracts.py tests/test_supervised_rfm.py tests/test_supervised_lifecycle.py tests/test_retail_models.py tests/test_retail_training.py tests/test_retail_dag.py
-```
-
-## Scope of evidence
-
-Teammate reported 4 new-test passes, 341 existing-test passes and a validation grid
-on the prior code. Those are external review evidence, not results reproduced above.
-Earlier local evidence from 16/19 October does not certify these new changes.
-
-Test metrics apply to the selected pre-refit model. Production refit has its own ID
-and fit cutoff; the code does not claim holdout quality for that refitted model.
-Teacher/scaler remain frozen so refit does not silently rename numeric clusters.
-Actual daily runs use classifier only after a valid classifier bundle is activated;
-an existing pinned KMeans model continues to use the backward-compatible KMeans path.
-
-
----
-
-# Đối chiếu review RFM
-
-Ảnh review là nguồn nhận xét và số liệu teammate báo cáo. Không coi 341 test pass hoặc bảng agreement trong ảnh là kết quả tự chạy lại.
-
-| Nhận xét | Cách xử lý | Bằng chứng/giới hạn |
+| Mốc | Cutoff exclusive | Công việc |
 |---|---|---|
-| RF gán cứng 60/8 | Grid có CLI và DAG params; chọn validation.new.macro_f1, lưu candidates/selected_params | Grid/refit Spark thật trên dữ liệu nhỏ đạt |
-| Validation chỉ dùng gate | Dùng để chọn tham số và gate; tie-break xác định trước | Test chọn theo khách mới, không theo all |
-| Chưa vào Airflow | Nối monthly trainer, model registry và daily dispatch; bỏ patch cũ | Test dispatch Spark đạt; DagBag/scheduler và lifecycle disk còn cần Docker |
-| Đánh giá thiên khách cũ | Báo cáo all/seen/new, new theo ID chưa xuất hiện trong train | Test cohort đạt; chưa benchmark lại dữ liệu thật |
-| Macro-F1 phạt lớp hoàn toàn vắng | Macro trên union nhãn/dự đoán, báo coverage; predicted-only vẫn bị phạt | Test confusion tính tay đạt |
-| Model cũ khi deploy | Refit student tại latest cutoff, teacher giữ cố định; tách evaluated_model_id/model_id | Test thứ tự và refit thật đạt; metric test không đại diện model refit |
-| Test bị dùng làm gate | Test chỉ báo cáo một lần sau selection, trước refit | Test điểm test=0 vẫn không thay quyết định validation |
-| run_date lặp trong Parquet | Bỏ cột vật lý; dựng lại cutoff khi so sánh retry | Test persistence bổ sung, skip trên Windows thiếu Hadoop native |
-| Loader chưa kiểm pipeline | Kiểm stage/type/column/scaler/dimensions/classes/hyperparameters/provenance/marker | Test cấu trúc pipeline thật đạt; roundtrip disk còn cần Docker |
-| Test tự so implementation/AST | Bỏ AST; import module bình thường; test nhãn ở hai cực, schema, metrics, cohorts, registry và orchestration | Không dùng test fit/score equality làm bằng chứng duy nhất |
+| Teacher/train | 2011-08-03 (T−90 ngày) | Fit scaler + KMeans; fit các RF thử nghiệm |
+| Validation | 2011-09-02 (T−60 ngày) | Chọn/gate RF theo khách mới |
+| Test | 2011-10-02 (T−30 ngày) | Chấm model đã chọn một lần |
+| Refit | 2011-11-01 (T) | Fit RF mới bằng cấu hình thắng, giữ teacher/scaler |
 
-Các thay đổi nằm trong checkout review rfm_push_20261019, nhánh codex/rfm-supervised-20261019.
-Chưa commit/push. Không chép đè workflow cũ đang có thay đổi riêng trong checkout initial-setup.
+Snapshot dùng giao dịch có `InvoiceDate < cutoff`. R = ngày chốt trừ ngày mua cuối;
+F = số hóa đơn khác nhau; M = tổng Quantity × UnitPrice. Features là log1p(R,F,M)
+qua assembler/scaler học ở train. CustomerID và RFM_score không làm features.
 
+Snapshot tích lũy, không phải bốn tập giao dịch rời nhau. New/seen đều so với ID
+ở train; khách mới ở validation có thể tiếp tục thuộc cohort new ở test.
+Đây là replay theo event-time; nếu dữ liệu đến muộn/sửa hồi tố, cần dữ liệu lưu
+theo thời điểm đã biết để đánh giá availability leakage.
 
-## Tổ chức sau khi gộp file
+Grid mặc định: numTrees=[60,150], maxDepth=[4,8,12]. Hòa điểm: ít cây trước,
+độ sâu nhỏ hơn sau. Gate mặc định 0.8; thiếu khách mới validation thì fail,
+không thay bằng điểm all/seen. Test không tham gia chọn/gate.
+Macro-F1 tính trên hợp các lớp có nhãn hoặc dự đoán; lớp hoàn toàn vắng được bỏ.
+Giữ số khách, confusion và per-class metrics để kiểm tra coverage.
 
-- `pyspark_rfm.py`: tính RFM và chạy daily CLI.
-- `rfm_supervised.py`: fit, chọn classifier, đánh giá, refit, lưu/nạp và predict.
-- `train_rfm_classifier.py`: entry point CLI training.
-- `retail_contracts.py`: kiểm tra và metrics thuần Python, không import Spark.
-- `test_supervised_contracts.py`: metrics, tham số, CLI và registry.
-- `test_supervised_rfm.py`: kiểm thử Spark; `test_supervised_lifecycle.py`: vòng đời tích hợp.
+Metadata tách `evaluated_model_id`, `model_id`, `fit_cutoff`, `teacher_cutoff` và
+`test_scope=pre_refit_model_only`. Bundle schema v3; bundle cũ cần train lại.
+`confidence` chỉ tham khảo, chưa hiệu chuẩn và không giữ/đổi nhãn.
 
-Các số liệu kiểm thử phía trên được ghi trước khi gộp file. Sau khi gộp, chạy lại `pytest -q tests/test_supervised_contracts.py tests/test_retail_models.py tests/test_retail_contracts.py`: **20 passed (5.28s)**. Các kiểm tra Docker/Airflow còn thiếu vẫn giữ nguyên trạng thái.
+## 4. Chuẩn bị môi trường Airflow
+
+Kiểm tra checkout mới đã được mount vào container. Nếu container cũ chưa nhận
+PYTHONPATH, khi không có job đang chạy, tạo lại riêng service Airflow:
+
+```sh
+docker compose ps
+docker compose exec -T airflow-scheduler printenv PYTHONPATH
+docker compose up -d --no-deps --force-recreate airflow-apiserver airflow-scheduler airflow-dag-processor
+docker compose exec -T airflow-scheduler python -c "import retail_contracts, retail_models, rfm_supervised; print(retail_contracts.__file__)"
+docker compose exec -T airflow-dag-processor airflow dags list-import-errors
+docker compose exec -T airflow-scheduler airflow pools set retail_spark 1 "One local Spark JVM"
+```
+
+Compose đã có PYTHONPATH chứa `/opt/airflow/scripts` và `/opt/airflow/dags`.
+Không xóa volume PostgreSQL. Đây là hướng dẫn vận hành; chưa tuyên bố scheduler
+UI đã được kiểm chứng chỉ vì standalone hoặc unit test pass.
+
+## 5. Chạy training DAG rồi daily
+
+Chuẩn bị `data/raw/data.csv`, sau đó tạo landing và ETL bootstrap:
+
+```sh
+docker compose exec -T airflow-scheduler python scripts/prepare_daily_landing.py
+docker compose exec -T airflow-scheduler spark-submit --master "local[2]" --driver-memory 3g scripts/retail_training.py --bootstrap-date 2011-10-31 --run-id bootstrap_rfm_20111101
+```
+
+Bootstrap ngày 31/10 tạo ETL cutoff 01/11. Không chạy lệnh Spark thủ công song song
+với DAG Spark: lệnh này không đi qua pool Airflow.
+
+Trigger `retail_rfm_training_dag` với Params:
+
+```json
+{
+  "model_kind": "classifier",
+  "training_cutoff": "2011-11-01",
+  "effective_from": "2011-11-02",
+  "source_version": "online-retail-v1",
+  "etl_manifest": null,
+  "rfm_k": 2,
+  "report_only": false,
+  "num_trees_grid": [60, 150],
+  "max_depth_grid": [4, 8, 12],
+  "min_macro_f1": 0.8
+}
+```
+
+Giữ `classifier_*_date=null` để dùng các mốc mặc định ở trên. K=2 là cấu hình demo;
+nếu cần chọn K, chạy `report_only=true` trước rồi tạo DagRun mới với K đã chọn.
+Xem [hướng dẫn chọn K](K_SELECTION_VI.md). Báo cáo ghi riêng `training_cutoff`
+(ETL/refit) và `teacher_cutoff`; không nhập ngày teacher vào training_cutoff.
+
+Training DAG có giới hạn logical date lịch sử tới hết 01/11/2011. Dùng một logical
+date lịch sử chưa có, ví dụ `2011-11-01T00:00:00Z`; logical date và cutoff là hai
+khái niệm khác nhau. Không dùng ngày hiện tại hoặc tái dùng logical date đã tồn tại.
+
+Đợi 5 task thành công, kiểm tra log `MODEL_ACTIVATED`, registry
+`data/manifests/models/registry.json`, model manifest và bundle tại
+`data/models/rfm/version=<id>/`. Thất bại training không thay model đang phục vụ.
+
+Sau đó trigger daily DAG với:
+
+```json
+{
+  "business_date": "2011-11-01",
+  "source_version": "online-retail-v1",
+  "model_version": null,
+  "rfm_k": null,
+  "churn_days": 90
+}
+```
+
+Business date 01/11 nghĩa là cutoff 02/11, hợp lệ sau refit 01/11.
+Chọn logical date thuộc khoảng lịch sử của daily DAG. Kiểm tra manifest model
+được pin có `model_kind=classifier`. Output `customers` phải có Cluster,
+model_version và supervised_model_id; `cluster_profile` chứa thống kê từng cụm.
+Đọc đường dẫn generation từ manifest, không đoán thư mục output mới nhất.
+`segment`/inactivity là quy tắc nghiệp vụ riêng, không phải tên cluster.
+
+Retry cùng DagRun phải giữ model binding. Kiểm tra publication thành công trước
+khi cho downstream sử dụng. Pause DAG sau demo lịch sử nếu không cần chạy tiếp.
+
+## 6. Kiểm thử và bằng chứng
+
+```sh
+docker compose exec -T airflow-scheduler python -m pytest -q -p no:cacheprovider tests/test_supervised_contracts.py tests/test_supervised_rfm.py tests/test_supervised_lifecycle.py tests/test_k_selection_context.py tests/test_retail_models.py tests/test_retail_training.py tests/test_retail_dag.py tests/test_rfm_publication.py
+```
+
+- Contract tests: metrics, selection, dates, CLI và registry/hash.
+- Spark tests: cohorts, real grid/refit, provenance/gate, bundle persistence,
+  output retry, daily dispatch và metadata mismatch.
+- Lifecycle: bootstrap → train → activate → daily qua code registry, không phải
+  một DagRun thực thi bởi scheduler.
+- K report regression: dùng ngày teacher để tính features nhưng giữ ngày ETL/refit
+  trong trường training_cutoff; legacy KMeans giữ hai ngày bằng nhau.
+
+Đã tự chạy standalone trên dataset thật, Docker Spark 4.2.0, 6 bước đều exit 0:
+prepare → teacher CLI → classifier CLI → daily → daily retry → verify.
+Store thử dùng một bucket; không phải benchmark hiệu năng production.
+
+| Kết quả lần standalone | Giá trị |
+|---|---|
+| Khách train/validation/test/refit | 3165 / 3321 / 3613 / 3970 |
+| RF được chọn | 150 cây, depth 8 |
+| Validation new | 156 khách; macro-F1 0.959540 |
+| Test new, trước refit | 448 khách; macro-F1 0.949182 |
+| Daily cutoff 02/11 | 3981 khách duy nhất; cluster 0=2421, cluster 1=1560 |
+| Retry cùng batch/ngày | Thành công, exact-content check đạt |
+| Tổng 6 bước | 274.40 giây, không tính khởi động/sửa môi trường |
+
+Kết quả này khác lần teammate báo cáo (60/8, test 0.9408); không coi hai lần chạy
+là cùng model/partitioning. Teammate báo 25 test RFM/registry pass, 0 skip và full
+suite 703 pass/2 fail (anomaly POST, thiếu mount .agent); đó là bằng chứng ngoài,
+không phải full-suite pass do tác giả tự tái hiện. Các test Windows trước đây dùng
+Spark 3.5.9, không thay thế kiểm chứng phiên bản dự án 4.2.0.
+
+Còn cần người làm DAG xác nhận live UI/scheduler trên môi trường triển khai,
+nguồn dữ liệu/registry thực tế và downstream. Không cần viết lại classifier.
+Validation ít khách mới nên báo rõ độ hạn chế khi so sánh cấu hình; không điều
+chỉnh split dựa trên điểm test để tìm kết quả đẹp hơn.
+
+### Pre-main verification ? 22/10/2026
+
+The eight-file Docker test command above completed: **47 passed, 0 skipped, 1 warning**, 290.20 seconds. Warning: PySpark testing utilities report incomplete pandas >=3 compatibility in the image. All selected tests passed; this is not a full-project suite result or a live scheduler DagRun.

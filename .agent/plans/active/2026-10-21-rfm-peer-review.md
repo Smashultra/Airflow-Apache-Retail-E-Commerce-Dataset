@@ -13,3 +13,7 @@ Implementation complete in this review checkout. Available checks: 35 passed;
 four filesystem/lifecycle tests explicitly skipped on Windows without native Hadoop.
 Keep plan active for project Docker persistence/lifecycle and actual Airflow verification.
 No commit/push or live model activation. See docs/RFM_SUPERVISED_VI.md.
+
+Follow-up fixes complete for K report cutoffs, shared ranking and mismatch regression. Teammate reports Docker/full-data success for baseline 45b4893, recorded as external evidence. Local follow-up: 19 passed, 3 skipped, 1 deselected. Keep plan active for unavailable container recreation/UI and real-data standalone CLI verification.
+
+2026-10-22 publication checkpoint: standalone real-data run completed (six stages). Pre-main scoped Docker suite: 47 passed, zero skips, one pandas warning. User authorized direct main push; operator guide rewritten. Keep remaining live UI/scheduler verification explicit.

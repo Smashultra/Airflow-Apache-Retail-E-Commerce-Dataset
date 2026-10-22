@@ -341,11 +341,17 @@ def confusion_metrics(cells, k):
                             f1=2 * tp / (actual + predicted) if included else None,
                             included_in_macro=included))
     f1s = [c['f1'] for c in classes if c['included_in_macro']]
-    return dict(customers=total, agreement=sum(n for (a, p), n in counts.items() if a == p) / total if total else None,
+    return dict(customers=total,
                 macro_f1=sum(f1s) / len(f1s) if f1s else None,
                 macro_labels=[c['cluster'] for c in classes if c['included_in_macro']],
                 macro_definition='union_of_true_and_predicted_labels', per_class=classes,
                 confusion=[dict(label=a, predicted=p, count=n) for (a, p), n in sorted(counts.items())])
+
+
+def candidate_rank(candidate):
+    """One ranking rule for retaining the fitted model and selecting metadata."""
+    return (-candidate['validation']['new']['macro_f1'],
+            candidate['params']['num_trees'], candidate['params']['max_depth'])
 
 
 def choose_candidate(candidates, minimum):
@@ -355,7 +361,7 @@ def choose_candidate(candidates, minimum):
     if not eligible:
         raise ValueError('No new validation customers; change split instead of falling back to seen customers')
     # Predeclared deterministic tie-break: smaller forest, then shallower trees.
-    winner = min(eligible, key=lambda c: (-c['validation']['new']['macro_f1'], c['params']['num_trees'], c['params']['max_depth']))
+    winner = min(eligible, key=candidate_rank)
     if winner['validation']['new']['macro_f1'] < minimum:
         raise ValueError('New-customer validation gate failed; no bundle released')
     return winner

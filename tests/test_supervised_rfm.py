@@ -132,7 +132,8 @@ def test_cli_provenance_and_gate_never_write(model_data, monkeypatch, mismatch):
     save.assert_not_called()
 
 
-def test_airflow_rfm_dispatch_uses_classifier(spark, model_data, tmp_path, monkeypatch):
+@pytest.mark.parametrize('metadata_mismatch', [False, True])
+def test_airflow_rfm_dispatch_uses_classifier(spark, model_data, tmp_path, monkeypatch, metadata_mismatch):
     import retail_pipeline as adapter
     import retail_models as registry
     _, _, model, info = model_data
@@ -143,7 +144,7 @@ def test_airflow_rfm_dispatch_uses_classifier(spark, model_data, tmp_path, monke
     monkeypatch.setattr(adapter,'load_stage',lambda *a: {'outputs':{'transactions':'curated/input'}})
     monkeypatch.setattr(registry,'validate_binding',lambda *a,**kw: manifest)
     monkeypatch.setattr(registry,'read_model',lambda *a,**kw: manifest)
-    monkeypatch.setattr(supervised,'load_bundle',lambda *a: (model,info))
+    monkeypatch.setattr(supervised,'load_bundle',lambda *a: (model, {**info, 'seed': -1} if metadata_mismatch else info))
     monkeypatch.setattr(PipelineModel,'load',lambda *a: pytest.fail('KMeans load reached in classifier branch'))
     written = {}
     monkeypatch.setattr(adapter,'parquet',lambda frame,path: written.update({path.name:frame.collect()}))
@@ -151,6 +152,11 @@ def test_airflow_rfm_dispatch_uses_classifier(spark, model_data, tmp_path, monke
     reader.read.parquet.return_value = source
     context = dict(kind='daily',model={},run_date='2020-04-01',source_version='v1',source_hash='h',
                    first_date='2019-01-01',churn_days=90,rfm_k=2)
+    if metadata_mismatch:
+        with pytest.raises(ValueError, match='metadata'):
+            adapter.run_rfm(reader, context, tmp_path/'output', tmp_path)
+        assert not written
+        return
     metrics, outputs, _ = adapter.run_rfm(reader, context, tmp_path/'output', tmp_path)
     assert metrics['customers'] == 2 and outputs == ['customers','cluster_profile']
     assert {r.model_version for r in written['customers']} == {'v3'}

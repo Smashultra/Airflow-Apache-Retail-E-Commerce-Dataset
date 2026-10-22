@@ -9,7 +9,7 @@ from pyspark_rfm import parse_args as daily_args
 
 def test_macro_excludes_unused_but_counts_false_positive_class():
     report = confusion_metrics([dict(label=0, predicted=0, count=8), dict(label=0, predicted=1, count=2)], 4)
-    assert report['agreement'] == 0.8
+    assert report['customers'] == 10
     assert report['macro_f1'] == pytest.approx((16/18 + 0) / 2)
     assert report['macro_labels'] == [0, 1]
     assert report['per_class'][2]['f1'] is None

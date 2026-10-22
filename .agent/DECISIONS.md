@@ -134,6 +134,8 @@ Use `YYYY-MM-DD HH:mm UTC+07:00` in every decision heading.
 - Consequences: IQR thresholds are retrospective review aids, not validated fraud thresholds or online detection. Implementation and acceptance evidence are in `.agent/plans/archive/2026-09-23-pyspark-anomalies.md`.
 - Revisit when: There are validated anomaly labels, a need to score new transactions using past-only reference data, or domain-approved alternative handling for sparse/zero-IQR products.
 
-## 2026-10-21 - Classifier selection and registry integration
+## 2026-10-21 20:50 UTC+07:00 - Classifier selection and registry integration
+
+Timestamp records this documentation update; original decision was recorded by date only.
 
 Select/gate by new-customer validation macro-F1; macro uses union of true/predicted labels, excluding only wholly absent classes. Test is reporting only and evaluated before refit. Refit latest student with frozen teacher/scaler; distinguish evaluation and deployment IDs. Monthly DAG explicitly requests classifier; legacy contexts/models remain KMeans compatible. Preserve registry activation and publication boundaries rather than transplanting the old local adapter. Pending Docker verification, not an operational activation.
