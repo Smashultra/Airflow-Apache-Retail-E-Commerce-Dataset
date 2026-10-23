@@ -58,8 +58,9 @@ ghi nhận lỗi demo đã được kích hoạt; đây KHÔNG phải marker d�
    `PIPELINE_COMPLETE`; Dashboard có `EXECUTIVE_DEMO`. Lúc này mới có
    audit_publication.json và completion.json của run.
 
-Không clear ETL/RFM: ETL rerun có thể thay generation và xung đột với nhánh đã
-publish. Output audit chưa publish ở attempt đầu có thể còn trên đĩa; kết quả
+Không cần clear ETL/RFM trong demo phục hồi này. ETL đã hỗ trợ reuse nếu
+đầu vào/output hợp lệ; run đã lệch generation từ trước cần tạo run mới.
+Output audit chưa publish ở attempt đầu có thể còn trên đĩa; kết quả
 được công bố sau phục hồi phải được đọc qua manifest. Không xóa marker để lặp
 demo; tạo DagRun mới với run ID/logical date chưa dùng.
 

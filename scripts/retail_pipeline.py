@@ -310,6 +310,39 @@ def run_audit(spark, context, output, root):
 def run_stage(stage, context_path):
     root = data_root().resolve()
     context = load_context(context_path, root)
+    if stage == "etl" and stage_file(root, context, "etl").exists():
+        # A committed stage is immutable within this run. Invalid artifacts
+        # must fail closed rather than replace inputs of published branches.
+        manifest = load_stage(root, context, "etl")
+        if manifest.get("stage") != "etl" or not {
+            "transactions", "audit_input", "parse_errors"
+        } <= manifest["outputs"].keys():
+            raise ValueError("Invalid ETL outputs; start a new DagRun")
+        source, _ = validate_landing(
+            root, context["source_version"], context["business_date"],
+            checksums=True,
+        )
+        if json_hash(source) != context["source_hash"]:
+            raise ValueError("Source manifest changed; start a new DagRun")
+        # Recover a crash after committing etl.json but before its discovery
+        # pointer, without replacing a pointer advertised by a newer run.
+        with publication_lock(root, context["run_date"]):
+            pointer = safe_path(
+                root, f"manifests/etl/{context['source_version']}/"
+                f"{context['run_date']}.json",
+            )
+            if not pointer.exists():
+                atomic_json(pointer, {
+                    "etl_manifest": stage_file(root, context, "etl")
+                    .relative_to(root).as_posix(),
+                    "etl_hash": json_hash(manifest),
+                })
+        LOGGER.warning(
+            "ETL_REUSED run_key=%s etl_hash=%s; validated existing outputs; "
+            "Spark computation skipped; output generation unchanged",
+            context["run_key"], json_hash(manifest),
+        )
+        return
     prefixes = {
         "etl": "curated",
         "rfm": "analytics/rfm_daily",

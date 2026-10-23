@@ -1,5 +1,17 @@
 # Demo idempotency trên Airflow UI
 
+## Bổ sung: Clear ETL với cùng đầu vào
+
+Sau cập nhật ETL reuse, tạo DagRun mới (run tạo trước thay đổi code sẽ bị
+kiểm tra code_version từ chối). Khi run thành công, có thể Clear riêng
+`submit_pyspark_etl`, hoặc kèm Downstream để kiểm tra lại toàn luồng.
+ETL kiểm tra context/code, checksum nguồn và các marker `_SUCCESS`, rồi log
+`ETL_REUSED` và giữ nguyên etl.json/hash/output generation. Airflow vẫn gọi
+spark-submit để khởi động script, nhưng script bỏ qua tạo SparkSession và
+tính toán ETL. Các nhánh đã công bố tiếp tục dùng cùng ETL.
+Nếu metadata/output/nguồn không hợp lệ, task thất bại thay vì ghi đè.
+Không tự sửa các run đã bị lệch generation trước bản cập nhật; tạo run mới.
+
 Mục tiêu: thực thi lại task đã công bố thành công trong cùng DagRun vẫn dùng
 cùng snapshot, không submit Spark lại, không tạo thêm generation dữ liệu.
 Chỉ bổ sung log `BRANCH_REUSED` vào cơ chế tái sử dụng có sẵn; không thêm Param/task.
@@ -49,8 +61,9 @@ Có thể làm tương tự với `compute_rfm_metrics`, đối chiếu `rfm_has
 
 - Chứng minh idempotency của nhánh đã publish khi chạy lại trong cùng run,
   với context, ETL và output vẫn nguyên vẹn. Không khẳng định toàn DAG idempotent.
-- Không Clear ETL hay tạo DagRun mới cho phép so sánh này: ETL có thể tạo
-  generation mới; nhánh đã publish sẽ từ chối nếu không còn khớp đầu vào.
+- Với demo nhánh ở trên, chỉ Clear nhánh để quan sát riêng `BRANCH_REUSED`.
+  Demo Clear ETL dùng quy trình bổ sung đầu tài liệu; nguồn thay đổi vẫn
+  cần DagRun mới, không tự ghi đè generation đã được sử dụng.
 - `BRANCH_PUBLISHED` ở attempt mới là kiểm tra/tái sử dụng snapshot, không có
   nghĩa một generation mới được tạo.
 - Ưu tiên all-in-one vì không phát Asset. Với `ecommerce_etl_dag`, task thành

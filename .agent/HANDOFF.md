@@ -1,5 +1,12 @@
 # Current Handoff
 
+## ETL same-run reuse - 2026-10-16
+
+- run_stage now reuses an existing valid ETL manifest before generation allocation or SparkSession startup. Validates context/code, required output names, completion markers and landing checksums/source hash; invalid existing stages fail closed. Keeps original ETL bytes/hash so published RFM/audit remain consistent. Repairs an absent training discovery pointer without replacing an existing pointer from another run.
+- Airflow still submits the Python application; reuse skips Spark computation, not spark-submit itself. Initial ETL execution stays unchanged. Docs explain Clear ETL and branch-only demos.
+- Verification: `docker compose exec -T airflow-scheduler python -m pytest -q -p no:cacheprovider tests/test_etl_reuse.py tests/test_branch_publication.py tests/test_allinone_dag.py` -> 38 passed in 14.03s. `git diff --check` passed (line-ending warnings only). Tests use mocked Spark/landing validation and real temporary manifests; no full-data UI run executed.
+- Existing run contexts fingerprint business code: create a new DagRun after deployment to test reuse. This does not repair previously mixed generations. Output integrity uses the established Parquet `_SUCCESS` contract, not full output-content hashes. No production data edits or commits.
+
 ## UI sensor deadlock demo - 2026-10-15
 
 - Added isolated retail_sensor_deadlock_demo.py defining three manual-only single-task DAGs (poke/reschedule/producer), dedicated retail_sensor_demo pool expected to have 1 slot. No business DAG modifications. Sensor waits for per-key hashed file under data/demos/sensor_deadlock; producer creates it. Poke timeout 180 seconds/retries zero bounds resource hold, reschedule interval 15 seconds. UI instructions require sensor running before triggering producer and fresh keys across trials.

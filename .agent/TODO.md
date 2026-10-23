@@ -1,5 +1,7 @@
 # TODO
 
+ETL reuse: DONE — Owner Codex; branch main; 38 focused Docker tests passed.
+
 | Status | Task | Owner | Branch | Dependency |
 |---|---|---|---|---|
 | DONE | Isolated UI sensor pool deadlock demonstration | Codex | main | 2 tests passed; UI pool setup documented; live demo not triggered |
