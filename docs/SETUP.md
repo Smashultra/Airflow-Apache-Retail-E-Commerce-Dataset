@@ -67,7 +67,9 @@ new `--source-version` and the corresponding DAG parameter.
 
 ### Bootstrap the first model before daily scoring
 
-Daily runs load a saved scaler/KMeans PipelineModel; they never fit one.
+Daily runs load a pinned classifier bundle (or a legacy KMeans model); they never fit one.
+For the current classifier workflow, exact temporal split and UI parameters, follow
+[RFM classifier DAG handoff](RFM_SUPERVISED_VI.md). Training defaults to `model_kind=classifier`.
 Bootstrap a committed ETL snapshot without requiring a scoring model:
 
 ```powershell
@@ -91,7 +93,8 @@ In the UI, trigger `retail_rfm_training_dag` with:
 
 Wait for all five tasks to succeed in training mode. `publish_model` logs `MODEL_ACTIVATED`;
 `data/manifests/models/registry.json` lists activations and model versions.
-The full PipelineModel is under `data/models/rfm/version=<id>/pipeline/`.
+Classifier artifacts are under `data/models/rfm/version=<id>/bundle/`, with
+`student`, `teacher` and `supervised_info`. Legacy KMeans uses `pipeline/`.
 Training uses only transactions before its cutoff. Model effectiveness dates
 in 2011 are simulated for this historical dataset, not actual deployment dates.
 

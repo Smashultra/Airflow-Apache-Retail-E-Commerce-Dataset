@@ -114,10 +114,24 @@ def resolve_inputs(args):
     if json_hash(etl) != context["etl_hash"] or source["run_date"] != context["run_date"]:
         raise ValueError("Training ETL generation or cutoff changed")
     args.input = str(safe_path(root, etl["outputs"]["transactions"]))
-    args.run_date = context["run_date"]
+    args.run_date = context.get("classifier_train_date", context["run_date"])
     args.seed = context["seed"]
     args.output = str(safe_path(root, f"analytics/k_selection/{context['run_key']}"))
     return context
+
+
+def report_metadata(context, args, customer_count, results):
+    """Keep the ETL/refit cutoff distinct from the teacher evaluation cutoff."""
+    return {
+        "training_cutoff": context["run_date"],
+        "teacher_cutoff": args.run_date,
+        "etl_manifest": context["etl_manifest"],
+        "etl_hash": context["etl_hash"],
+        "seed": args.seed,
+        "rfm_k": context["rfm_k"],
+        "customers": customer_count,
+        "scores": [dict(k=k, wssse=w, silhouette=s) for k, w, s in results],
+    }
 
 
 def main():
@@ -154,15 +168,9 @@ def main():
             from pathlib import Path
             from retail_contracts import atomic_json
 
-            atomic_json(Path(args.output) / "report.json", {
-                "training_cutoff": args.run_date,
-                "etl_manifest": context["etl_manifest"],
-                "etl_hash": context["etl_hash"],
-                "seed": args.seed,
-                "rfm_k": context["rfm_k"],
-                "customers": customer_count,
-                "scores": [dict(k=k, wssse=w, silhouette=s) for k, w, s in results],
-            })
+            atomic_json(Path(args.output) / "report.json",
+                        report_metadata(context, args, customer_count, results))
+
         logger.info("Report: %s; cutoff=%s; ETL=%s. Choose rfm_k manually; no automatic selection.",
                     args.output, args.run_date, context["etl_manifest"] if context else args.input)
         features_df.unpersist()

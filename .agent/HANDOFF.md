@@ -694,3 +694,68 @@ Local follow-up: verify the RFM input contract against the new cleaning output a
 - Verification: SHA256 comparisons against temporary backups passed for `scripts/pyspark_rfm.py` and `tests/test_pyspark_rfm.py`; both files are unchanged.
 - `git status --short --branch`: ahead of origin by 4 commits; existing local changes remain. No push performed.
 - Risks: existing uncommitted work remains local. Next action: continue RFM work.
+
+## RFM supervised publication - 2026-10-19
+
+Owner Codex, branch codex/rfm-supervised-20261019, based on f671393. User authorized push. Standalone RFM classifier source/test/docs included; divergent local shared workflow preserved as docs/patches/rfm_local_workflow.patch rather than replacing upstream model registry. Syntax and six actual extracted CLI cases pass; Spark unavailable today. Historical test evidence retained with dates. No data/models/notebooks or unrelated source included. Next: adapt classifier into upstream model registry and run Docker verification before main integration.
+
+2026-10-19 correction: prior publication withdrawn with lease; model predicts numeric Cluster directly. All naming/holding/prior-label policy removed. Owner Codex, branch codex/rfm-supervised-20261019. 3 contract tests and syntax checks pass; Spark unavailable. No new commit/push; runtime review pending.
+
+2026-10-19: User authorized republishing corrected direct-cluster RFM. Owner Codex; branch codex/rfm-supervised-20261019. Prepared exact source/test/docs scope; no VIP/prior-label policy in executable changes. 3 contract tests and 5 syntax checks pass. Shared workflow retained as unapplied patch; Docker/Spark validation remains pending.
+
+## RFM peer review correction - 2026-10-21
+
+Owner Codex, branch codex/rfm-supervised-20261019. Implemented temporal grid selection on new-customer validation macro-F1, all/seen/new cohorts, observed-union macro-F1, validation-only gate and single pre-refit test evaluation. Refit student at latest cutoff with fixed teacher; schema v3 records evaluated/deployed IDs. Strict model/metadata contracts and consistent partition schema. Integrated classifier with existing training context, registry hashes/activation and daily dispatch; monthly DAG defaults classifier. K report uses teacher cutoff. Removed obsolete workflow patch.
+
+Verification: 35 distinct tests passed across focused runs, four platform-specific disk/lifecycle tests skipped; actual Spark grid/refit and daily adapter dispatch covered. 27 Python files parsed. Full-data quality, persistence and Airflow scheduler/DagBag remain unverified here; see docs/RFM_SUPERVISED_VI.md. No commit/push. Original initial-setup checkout has divergent shared workflow and was not overwritten. Next: teammate review and project Docker acceptance suite before activation.
+
+## RFM file consolidation - 2026-10-21
+
+Owner Codex, branch codex/rfm-supervised-20261019. Moved pure classifier helpers into existing retail_contracts.py, registry tests into test_supervised_contracts.py, and verification/review notes into docs/RFM_SUPERVISED_VI.md. Removed four redundant files and updated imports/fingerprinting/references. No training or daily behavior change intended. Verification: pytest -q tests/test_supervised_contracts.py tests/test_retail_models.py tests/test_retail_contracts.py -> 20 passed in 5.28s. Docker/Airflow checks remain pending. No commit/push.
+
+## RFM review publication - 2026-10-21
+
+User authorized commit/push of consolidated RFM changes to codex/rfm-supervised-20261019. Remote branch checked at 518a976 with no divergence before publication. Includes classifier tuning/refit, registry and DAG integration, focused tests and consolidated guide. Verification retained: 35 distinct passes and four platform skips before consolidation; 20 focused passes after consolidation (overlapping, not additive); git diff --check passed. No model activation or main merge. Next: teammate review, Docker persistence/lifecycle and Airflow acceptance, then full-data evaluation. Earlier no-push notes describe earlier checkpoints.
+
+## RFM follow-up review - 2026-10-21
+
+Owner Codex; branch codex/rfm-supervised-20261019. Corrected K report training_cutoff vs teacher_cutoff, centralized RF candidate ranking, added K cutoff and registry metadata mismatch tests. Consolidated guide distinguishes teammate Docker/full-data evidence from local Windows checks, small validation/tied scores, and remaining standalone CLI/UI verification. Documented targeted Airflow recreation from deployed checkout; do not switch relative data mounts to review worktree. Corrected TODO table and timestamp. Follow-up verification: pytest tests/test_k_selection_context.py tests/test_supervised_contracts.py tests/test_supervised_rfm.py -k "not real_temporal_grid" -> 19 passed, 3 Windows filesystem skips, 1 deselected (81.74s). Includes new cutoff/metadata mismatch regressions and model-selection orchestration. Docker executable unavailable; no container recreation, project PySpark 4.2.0 rerun or real-data standalone CLI run claimed. No new commit/push.
+
+RFM cleanup 2026-10-21: owner Codex, branch codex/rfm-supervised-20261019. User authorized GitHub cleanup only: untrack 24 generated outputs (byte-for-byte local preservation verified), ignore their directories, remove obsolete RFM_DAG_HANDOFF_VI.md, update notebook prerequisites. Code, input fixtures and notebooks retained. Separate cleanup commit; pending peer-review code changes remain unstaged.
+
+2026-10-21: Codex simplified RFM reporting at user request: removed optional agreement metric; preserved macro-F1 selection and per-class diagnostics. Synchronized review checkout and Documents initial-setup; backup C:\Users\Lenovo\.codex\.chatgpt-projects\g-p-6a9cd2b108788191b22e1d7768f56837\rfm_metrics_backup_20261021_224259. Verification: test_supervised_contracts.py in Documents checkout: 7 passed in 1.78s. No commit/push.
+
+
+## Standalone execution verified - 2026-10-22
+
+Executed the real store-based standalone path using the local source dataset and
+project Docker image, Spark 4.2.0. Separate Linux volume
+`rfm-standalone-linux-20261021`; project/dataset mounted read-only.
+Preparation used one customer bucket for this isolated demonstration.
+All six stages succeeded: prepare snapshots, teacher CLI, classifier CLI,
+daily CLI, identical daily retry, and output/bundle verification.
+
+- Train/validation/test/refit cutoffs: 2011-08-03 / 2011-09-02 / 2011-10-02 / 2011-11-01.
+- Snapshot customers: 3165 / 3321 / 3613 / 3970.
+- Selected RF: 150 trees, maxDepth 8, from the default six configurations.
+- Validation new customers: 156; macro-F1 0.9595400708913288.
+- Test new customers: 448; macro-F1 0.9491816561335278 (pre-refit model only).
+- Daily 2011-11-02: 3981 unique customers; cluster 0=2421, cluster 1=1560.
+- Saved/loaded bundle successfully; evaluated/deployed model IDs differ.
+- Daily retry succeeded through the existing exact-content comparison.
+- Sum of six stage execution times: 274.40 seconds.
+
+This is independent standalone evidence, not a reproduction of the teammate's
+registry run. Selected parameters/test score differ; no claim of identical
+partitioning, teacher or trained model between the two runs.
+No serving-model activation or Airflow DAG execution was performed.
+Docker Desktop was started; existing services auto-started. Test container is
+stopped, and its isolated volume is retained. Windows native Hadoop write failed;
+Linux volume run passed. Logs/artifacts are retained in the test volume;
+result.json, snapshots.json and execution.json are exported to
+`C:\Users\Lenovo\.codex\.chatgpt-projects\g-p-6a9cd2b108788191b22e1d7768f56837\rfm_standalone_docker_20261021`.
+No commit/push.
+
+## Main publication authorized - 2026-10-22
+
+Owner Codex. User explicitly requested direct main publication of RFM and required DAG dependencies. origin/main=f671393 is ancestor of review branch; normal fast-forward push only. Final corrections: separate K report cutoffs, shared RF ranking, metadata mismatch regression, remove optional agreement reporting. Rewrote RFM_SUPERVISED_VI.md as operator handoff with bootstrap/training/daily Params and prerequisites; linked SETUP. Docker scoped integration suite: 47 passed, 0 skipped, 1 pandas compatibility warning in 290.20s. Standalone real-data six-stage run already passed. Original Documents anomaly/notebook changes excluded. Live scheduler verification remains operator task; no model activation performed.

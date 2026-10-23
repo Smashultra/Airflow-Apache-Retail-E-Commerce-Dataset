@@ -6,6 +6,10 @@ Hai notebook trả lời hai câu hỏi: **khách hàng trong snapshot đang có
 
 ## Chuẩn bị và chạy
 
+Các output Parquet so sánh K và demo RFM không được lưu trong Git. Khi clone mới,
+cần tạo lại output hoặc cung cấp đường dẫn tới bản local trước khi chạy notebook.
+Việc dọn Git giữ nguyên các notebook và fixture đầu vào.
+
 1. Lưu các thay đổi trong editor trước khi mở bản notebook đã tổ chức lại.
 2. Chọn kernel có `pandas`, `pyarrow`, `numpy`, `matplotlib`, `seaborn`. Nếu thiếu, chạy `%pip install pandas pyarrow numpy matplotlib seaborn`, rồi restart kernel.
 3. Kiểm tra `PROJECT_ROOT_OVERRIDE`, `RUN_DATE` và các đường dẫn ở mục A. Mặc định ngày chốt là `2011-12-10`; tự dò repo từ thư mục hiện tại hoặc các thư mục cha.

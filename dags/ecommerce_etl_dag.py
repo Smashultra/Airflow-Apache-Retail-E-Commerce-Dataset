@@ -126,7 +126,7 @@ with DAG(
 ### Retail pipeline
 Prepare landing, pool and a trained model first (docs/SETUP.md).
 Manual trigger: business_date=2011-12-09, churn_days=90.
-Daily only applies the frozen scaler/KMeans; training runs separately.
+Daily applies the pinned registry model (classifier or legacy KMeans); training runs separately.
 The exclusive analysis cutoff is 2011-12-10. The daily timetable is bounded
 to historical data: use explicit manual runs/backfills, not today's date.
 Success requires both analytics branches and the publication summary.

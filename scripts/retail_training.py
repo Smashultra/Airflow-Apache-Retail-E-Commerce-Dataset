@@ -16,6 +16,48 @@ from retail_contracts import (
 from retail_models import FEATURE_VERSION, artifact_hashes, read_training_etl
 
 
+def train_classifier(spark, context, source, root, output, version, etl):
+    """Use the current registry/publication protocol for a supervised bundle."""
+    from pyspark_rfm import compute_rfm, select_history, fit_rfm_model
+    from rfm_supervised import select_and_refit, save_bundle, load_bundle, score
+    from retail_models import bundle_hashes
+    from datetime import date, timedelta
+    dates = [context['classifier_train_date'], context['classifier_validation_date'],
+             context['classifier_test_date'], context['run_date']]
+    frames = [compute_rfm(select_history(source, cutoff), cutoff) for cutoff in dates]
+    teacher = fit_rfm_model(frames[0], context['rfm_k'], context['seed'])
+    student, info = select_and_refit(*frames, teacher, train_date=dates[0], validation_date=dates[1],
+                                    test_date=dates[2], refit_date=dates[3],
+                                    trees=context['num_trees_grid'], depths=context['max_depth_grid'],
+                                    seed=context['seed'], minimum=context['min_macro_f1'])
+    info.update(etl_manifest=context['etl_manifest'], etl_hash=context['etl_hash'],
+                snapshot_mode='retrospective_event_time_slices_of_frozen_etl')
+    bundle = output / 'bundle'
+    save_bundle(spark, str(bundle), student, teacher, info)
+    restored, _ = load_bundle(spark, str(bundle), (date.fromisoformat(dates[3]) + timedelta(days=1)).isoformat())
+    expected = score(frames[3], student, version).select('CustomerID', 'Cluster')
+    actual = score(frames[3], restored, version).select('CustomerID', 'Cluster')
+    if not expected.exceptAll(actual).isEmpty() or not actual.exceptAll(expected).isEmpty():
+        raise ValueError('Classifier save/load changed assignments')
+    pipeline = (bundle / 'student').relative_to(root).as_posix()
+    manifest = dict(complete=True, model_kind='classifier', model_version=version,
+                    feature_version=FEATURE_VERSION, pipeline_path=pipeline,
+                    bundle_path=bundle.relative_to(root).as_posix(),
+                    artifact_hashes=artifact_hashes(root, pipeline),
+                    bundle_hashes=bundle_hashes(root, bundle.relative_to(root).as_posix()),
+                    supervised_info=info, spark_version=spark.version,
+                    training_cutoff=context['run_date'], source_version=context['source_version'],
+                    source_hash=context['source_hash'], etl_manifest=context['etl_manifest'],
+                    etl_hash=json_hash(etl), training_context_hash=json_hash(context),
+                    training_code_version=context['code_version'], k=context['rfm_k'], seed=context['seed'])
+    atomic_json(output / 'model.json', manifest)
+    candidate = dict(context_hash=json_hash(context), model_version=version,
+                     model_manifest=(output / 'model.json').relative_to(root).as_posix(),
+                     model_manifest_hash=json_hash(manifest))
+    atomic_json(context_file(root, context['run_key']).with_name('training.json'), candidate)
+    return candidate
+
+
 def train_model(spark, context, root):
     """Fit on a frozen ETL snapshot and commit a verified candidate only."""
     from pyspark.ml import PipelineModel
@@ -44,6 +86,8 @@ def train_model(spark, context, root):
     output = safe_path(root, f"models/rfm/version={version}")
     output.mkdir(parents=True)
     try:
+        if context.get('model_kind', 'kmeans') == 'classifier':
+            return train_classifier(spark, context, source, root, output, version, etl)
         model = fit_rfm_model(rfm, context["rfm_k"], context["seed"])
         scaler, kmeans = model.stages[-2:]
         values = [*scaler.mean, *scaler.std]

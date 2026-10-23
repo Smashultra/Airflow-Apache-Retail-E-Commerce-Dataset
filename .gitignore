@@ -17,6 +17,11 @@ data/curated/*
 !data/curated/.gitkeep
 data/analytics/rfm_daily/*
 !data/analytics/rfm_daily/.gitkeep
+
+# Generated RFM outputs; keep input fixtures and source notebooks tracked.
+data/analytics/rfm_comparison/
+data/fixtures/rfm_output/
+data/fixtures/rfm_demo/output/
 data/audit/anomalies/*
 !data/audit/anomalies/.gitkeep
 data/audit/anomalies.parquet/

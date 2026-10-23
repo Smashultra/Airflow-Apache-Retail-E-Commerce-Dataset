@@ -3,7 +3,9 @@
 Luồng: `validate_training_input → evaluate_k → continue_training → train_rfm_model → publish_model`.
 
 `evaluate_k` thử K từ 2 đến `k_max` (mặc định 8, giảm theo số khách),
-dùng đúng snapshot ETL, cutoff và seed trong context training. Dữ liệu là
+dùng đúng snapshot ETL và seed trong context training. Với classifier, cutoff
+đánh giá K là `classifier_train_date` (ngày teacher), không phải cutoff refit.
+Dữ liệu là
 lịch sử tích lũy trước cutoff, không chỉ tháng gần nhất. Task chạy Spark trong
 pool `retail_spark`, không tự chọn K hay thay đổi `rfm_k`.
 
@@ -20,6 +22,10 @@ pool `retail_spark`, không tự chọn K hay thay đổi `rfm_k`.
 4. Chọn K bằng tay. Trigger **DagRun mới** với `report_only=false`, `rfm_k`
    đã chọn, cùng `training_cutoff` và `etl_manifest` ghi trong `report.json`.
    Giữ cùng `source_version`. DAG tính báo cáo lại rồi train và publish.
+   `training_cutoff` trong báo cáo là cutoff ETL/refit; `teacher_cutoff` là
+   ngày dùng để chọn K. Không nhập `teacher_cutoff` vào Param `training_cutoff`.
+   Nếu đã tùy chỉnh `classifier_train_date`, giữ nguyên giá trị này ở lần train.
+   Với báo cáo cũ chỉ có một trường ngày, hãy tạo lại báo cáo bằng code mới.
    Run train có thể dùng logical date `2011-11-01T00:00:00Z`. Hai ví dụ trên
    đều dùng cutoff `2011-12-01`; logical date không thay cutoff của manual run.
    Nếu logical date đã được dùng, chọn mốc lịch sử khác chưa dùng trong giới hạn
